@@ -1,12 +1,18 @@
-FROM python:3.13-slim
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
+FROM node:24-alpine AS build
 WORKDIR /srv
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 COPY . .
+RUN npm run build && npm prune --omit=dev
 
-# Render передаёт порт в переменной PORT
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000}"]
+FROM node:24-alpine
+ENV NODE_ENV=production
+WORKDIR /srv
+COPY --from=build --chown=node:node /srv/node_modules ./node_modules
+COPY --from=build --chown=node:node /srv/package.json ./package.json
+COPY --from=build --chown=node:node /srv/dist ./dist
+COPY --from=build --chown=node:node /srv/server ./server
+COPY --from=build --chown=node:node /srv/migrations ./migrations
+USER node
+EXPOSE 10000
+CMD ["npm", "start"]
