@@ -202,24 +202,22 @@ async function deliver() {
 async function sendCommand(command: Record<string, unknown>) {
   if (!socket?.connected) throw new Error("Нет соединения с комнатой.");
   return new Promise<void>((resolve, reject) =>
-    socket!
-      .timeout(10000)
-      .emit(
-        "command",
-        {
-          ...command,
-          commandId: crypto.randomUUID(),
-          ...(["load", "loadExternal"].includes(String(command.type))
-            ? {}
-            : { mediaRevision: snapshot?.playback.mediaRevision }),
-        },
-        (e: Error | null, result: { ok: boolean; error?: string }) => {
-          if (e) reject(new Error("Нет подтверждения от сервера."));
-          else if (!result?.ok)
-            reject(new Error(result?.error || "Действие отклонено."));
-          else resolve();
-        },
-      ),
+    socket!.timeout(10000).emit(
+      "command",
+      {
+        ...command,
+        commandId: crypto.randomUUID(),
+        ...(["load", "loadExternal"].includes(String(command.type))
+          ? {}
+          : { mediaRevision: snapshot?.playback.mediaRevision }),
+      },
+      (e: Error | null, result: { ok: boolean; error?: string }) => {
+        if (e) reject(new Error("Нет подтверждения от сервера."));
+        else if (!result?.ok)
+          reject(new Error(result?.error || "Действие отклонено."));
+        else resolve();
+      },
+    ),
   );
 }
 async function checkUpdate() {
@@ -238,7 +236,13 @@ async function checkUpdate() {
     data.extensionId !== chrome.runtime.id
   )
     throw new Error("Сервис вернул несовместимое обновление.");
-  return { ...data, downloadUrl: server + "/extension/tvissn-extension.zip" };
+  return {
+    ...data,
+    downloadUrl:
+      server +
+      "/extension/tvissn-extension.zip?v=" +
+      encodeURIComponent(data.version),
+  };
 }
 async function stop() {
   enabled = false;

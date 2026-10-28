@@ -20,7 +20,7 @@ test("invitation uses a fragment, preserves code exactly and prefills from paste
     "private+code&value",
   );
   const url = new URL(link);
-  assert.equal(url.search, "");
+  assert.equal(url.search, "?join=1");
   assert.equal(url.pathname, "/");
   assert.equal(inviteFromUrl(link), "private+code&value");
   assert.equal(credential(link), "private+code&value");

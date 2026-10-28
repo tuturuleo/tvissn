@@ -11,6 +11,7 @@ export function inviteFromUrl(value: string) {
 }
 export function invitationLink(origin: string, code: string) {
   const url = new URL("/", origin);
+  url.searchParams.set("join", "1");
   url.hash = new URLSearchParams({ invite: code }).toString();
   return url.toString();
 }

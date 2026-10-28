@@ -372,7 +372,14 @@ const checkpoint = setInterval(() => {
     .catch((e) => app.log.error(e));
 }, 15000);
 if (existsSync("dist/index.html")) {
-  await app.register(fastifyStatic, { root: resolve("dist"), maxAge: "1h" });
+  await app.register(fastifyStatic, {
+    root: resolve("dist"),
+    maxAge: "1h",
+    setHeaders(res, path) {
+      if (path.endsWith(".html") || path.includes("/extension/"))
+        res.setHeader("Cache-Control", "no-store");
+    },
+  });
   app.setNotFoundHandler((req, reply) => {
     if (req.url.startsWith("/api/"))
       return reply.code(404).send({ error: "Не найдено" });

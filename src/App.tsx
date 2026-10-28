@@ -84,6 +84,7 @@ export function App() {
     }
   }, []);
   useEffect(() => {
+    takeInvitation();
     void check();
   }, [check]);
   return (
@@ -472,7 +473,9 @@ function Room({
                 <Link2 className="size-4" />
               </div>
               <label className="sr-only" htmlFor="video-url">
-                Ссылка на видео YouTube
+                {source === "youtube"
+                  ? "Ссылка на видео YouTube"
+                  : "Ссылка на внешний сайт"}
               </label>
               <Input
                 id="video-url"
