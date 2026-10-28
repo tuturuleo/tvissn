@@ -14,6 +14,9 @@ import {
   ArrowRight,
   LoaderCircle,
   ExternalLink,
+  Copy,
+  Check,
+  Users,
 } from "lucide-react";
 import {
   DEFAULT_SERVER,
@@ -21,6 +24,7 @@ import {
   isNewer,
   samePage,
   serverOrigin,
+  parseInvitation,
 } from "./shared";
 
 async function request(type: string, data: Record<string, unknown> = {}) {
@@ -41,7 +45,10 @@ function Popup() {
     [code, setCode] = useState(""),
     [server, setServer] = useState(DEFAULT_SERVER),
     [tab, setTab] = useState<chrome.tabs.Tab | null>(null),
-    [frameOrigins, setFrameOrigins] = useState<string[]>([]);
+    [frameOrigins, setFrameOrigins] = useState<string[]>([]),
+    [invitation, setInvitation] = useState(""),
+    [copied, setCopied] = useState(false),
+    [newUrl, setNewUrl] = useState("");
   async function refresh() {
     try {
       setState(await request("STATE"));
@@ -88,7 +95,7 @@ function Popup() {
     e.preventDefault();
     let origin: string;
     try {
-      origin = serverOrigin(server);
+      origin = serverOrigin(parseInvitation(code).server || server);
     } catch (e) {
       setError((e as Error).message);
       return;
@@ -98,7 +105,11 @@ function Popup() {
       return;
     }
     await action(() =>
-      request("LOGIN", { server, name: name.trim(), code: credential(code) }),
+      request("LOGIN", {
+        server: origin,
+        name: name.trim(),
+        code: credential(code),
+      }),
     );
   }
   async function attach() {
@@ -160,10 +171,10 @@ function Popup() {
         </div>
       ) : !state.session ? (
         <form onSubmit={login} className="space-y-4 p-5">
-          <h1 className="text-lg font-medium">Смотреть на других сайтах</h1>
+          <h1 className="text-lg font-medium">Смотреть вместе</h1>
           <p className="text-xs leading-5 text-muted-foreground">
-            Войдите с тем же кодом, что на сайте tvissn. Затем откройте вкладку
-            с видео.
+            Введите код или вставьте приглашение друга. Затем откройте YouTube
+            или другой сайт с видео.
           </p>
           <label className="block space-y-2 text-xs">
             Ваше имя
@@ -180,7 +191,11 @@ function Popup() {
             <Input
               value={code}
               type="password"
-              onChange={(e) => setCode(e.target.value)}
+              onChange={(e) => {
+                setCode(e.target.value);
+                const invite = parseInvitation(e.target.value);
+                if (invite.server) setServer(invite.server);
+              }}
               required
               autoComplete="current-password"
             />
@@ -227,6 +242,63 @@ function Popup() {
               <LogOut />
             </Button>
           </div>
+          <section
+            className="rounded-lg border border-border p-3"
+            aria-label="Участники комнаты"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="flex items-center gap-2 text-xs font-medium">
+                <Users className="size-3.5" />В комнате
+              </h2>
+              <Badge variant="secondary">
+                {state.snapshot?.participants?.length || 0}
+              </Badge>
+            </div>
+            <div className="space-y-3">
+              {(state.snapshot?.participants || []).map((person: any) => (
+                <div key={person.id} className="flex items-center gap-2">
+                  <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-secondary text-xs">
+                    {Array.from(person.name)[0] as string}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs">
+                      {person.name}
+                      {person.id === state.session.id && (
+                        <span className="ml-1 text-muted-foreground">· вы</span>
+                      )}
+                    </p>
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">
+                      {person.status === "ready"
+                        ? "Готов к просмотру"
+                        : person.status === "buffering"
+                          ? "Загружает видео…"
+                          : person.status === "error"
+                            ? "Плеер недоступен"
+                            : "Подключается…"}
+                    </p>
+                  </div>
+                  <span
+                    className={
+                      "size-1.5 rounded-full " +
+                      (person.status === "ready"
+                        ? "bg-emerald-300/70"
+                        : "bg-zinc-500")
+                    }
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 flex justify-between border-t border-border pt-3 text-[11px] text-muted-foreground">
+              <span>Задержка до сервера</span>
+              <span className="font-mono">
+                {state.connected &&
+                state.ping !== null &&
+                state.ping !== undefined
+                  ? state.ping + " мс"
+                  : "—"}
+              </span>
+            </div>
+          </section>
           {playback?.externalUrl && (
             <div className="rounded-lg border border-border bg-card p-3">
               <span className="text-xs text-muted-foreground">
@@ -292,6 +364,80 @@ function Popup() {
           )}
           {state.enabled && (
             <div className="space-y-3">
+              <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3 text-xs">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 accent-white"
+                  checked={!!state.autoFollow}
+                  onChange={(e) =>
+                    action(() =>
+                      request("FOLLOW", { enabled: e.target.checked }),
+                    )
+                  }
+                />
+                <span>
+                  Автопереход за общим видео
+                  <span className="mt-1 block text-muted-foreground">
+                    Только эта вкладка. Самостоятельная смена адреса выключает
+                    режим.
+                  </span>
+                </span>
+              </label>
+              {state.pendingNavigation && (
+                <div className="rounded-lg border border-border p-3 text-xs">
+                  <p className="mb-2 break-all">
+                    Нужен доступ к {new URL(state.pendingNavigation).hostname}
+                  </p>
+                  <Button
+                    size="sm"
+                    onClick={async () => {
+                      const origin = new URL(state.pendingNavigation).origin;
+                      if (
+                        await chrome.permissions.request({
+                          origins: [origin + "/*"],
+                        })
+                      )
+                        await action(() => request("NAVIGATE"));
+                    }}
+                  >
+                    Разрешить и перейти
+                  </Button>
+                </div>
+              )}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void action(() =>
+                    request("COMMAND", {
+                      command: { type: "loadExternal", url: newUrl },
+                    }),
+                  );
+                }}
+                className="space-y-2"
+              >
+                <label
+                  className="text-xs text-muted-foreground"
+                  htmlFor="shared-url"
+                >
+                  Другое видео для всех
+                </label>
+                <Input
+                  id="shared-url"
+                  type="url"
+                  value={newUrl}
+                  onChange={(e) => setNewUrl(e.target.value)}
+                  placeholder="Ссылка на страницу с видео"
+                  required
+                />
+                <Button
+                  className="w-full"
+                  size="sm"
+                  variant="secondary"
+                  disabled={!newUrl.trim() || busy}
+                >
+                  Установить видео
+                </Button>
+              </form>
               <Button
                 className="w-full"
                 variant="outline"
@@ -364,14 +510,41 @@ function Popup() {
               )}
             </div>
           )}
-          <a
-            className="inline-flex items-center gap-2 text-xs text-muted-foreground underline"
-            href={state.session.server}
-            target="_blank"
-            rel="noopener noreferrer"
+          <Button
+            className="w-full"
+            variant="outline"
+            onClick={() =>
+              action(async () => {
+                const result = await request("INVITE");
+                setInvitation(result.invitation);
+                try {
+                  await navigator.clipboard.writeText(result.invitation);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2500);
+                } catch {
+                  setError("Приглашение готово. Скопируйте его из поля ниже.");
+                }
+              })
+            }
           >
-            Открыть tvissn <ExternalLink className="size-3" />
-          </a>
+            {copied ? <Check /> : <Copy />}
+            {copied ? "Приглашение скопировано" : "Пригласить друга"}
+          </Button>
+          {invitation && (
+            <label className="block text-xs text-muted-foreground">
+              Приглашение на 7 дней
+              <Input
+                readOnly
+                value={invitation}
+                className="mt-2"
+                onFocus={(e) => e.target.select()}
+              />
+              <span className="mt-2 block">
+                Друг вставляет его в поле входа расширения. Открывать сайт не
+                нужно.
+              </span>
+            </label>
+          )}
         </main>
       )}
       {(error || state?.error) && (

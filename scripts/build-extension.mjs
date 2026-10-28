@@ -1,5 +1,5 @@
 import { build } from "esbuild";
-import { zipSync, strToU8 } from "fflate";
+import { zipSync } from "fflate";
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
@@ -27,12 +27,11 @@ if (
 const manifest = {
   manifest_version: 3,
   name: "tvissn — смотрим вместе",
-  description:
-    "Синхронный просмотр внешних сайтов с друзьями через собственный tvissn.",
+  description: "Совместный просмотр на сайтах с плавающим виджетом tvissn.",
   version: release.version,
   minimum_chrome_version: "116",
   key: identity.key,
-  permissions: ["storage", "activeTab", "scripting"],
+  permissions: ["storage", "activeTab", "scripting", "clipboardWrite"],
   host_permissions: [identity.defaultServer + "/*"],
   optional_host_permissions: ["https://*/*", "http://*/*"],
   action: { default_title: "tvissn", default_popup: "popup.html" },

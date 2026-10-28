@@ -1,3 +1,4 @@
+import { createWidget, type WidgetPreferences } from "./widget";
 import type { Playback, Snapshot } from "../../server/protocol";
 import { positionAt } from "../../server/timeline";
 
@@ -20,10 +21,10 @@ function start() {
   const videoKeys = new WeakMap<HTMLVideoElement, string>();
   let counter = 0,
     chosenVideoKey: string | null = null;
-  let host: HTMLDivElement | null = null,
-    label: HTMLSpanElement | null = null,
-    playButton: HTMLButtonElement | null = null,
-    permissionButton: HTMLButtonElement | null = null;
+  let widget: ReturnType<typeof createWidget> | null = null;
+  let playerOptions: { id: string; title: string }[] = [],
+    selectedPlayer: string | null = null,
+    autoFollow = false;
   const send = (m: unknown) => {
     try {
       return chrome.runtime.sendMessage(m).catch(() => null);
@@ -35,84 +36,48 @@ function start() {
   const intent = (command: Record<string, unknown>) => {
     if (!primary || !connected) return;
     void send({ type: "TVISSN_INTENT", command }).then((r) => {
-      if (r && !r.ok && label) label.textContent = r.error;
+      if (r && !r.ok) widget?.showError(r.error);
     });
   };
-  function panel() {
-    if (host) return;
-    host = document.createElement("div");
-    host.dataset.tvissn = "";
-    host.style.cssText =
-      "position:fixed;bottom:18px;left:18px;z-index:2147483646;";
-    const shadow = host.attachShadow({ mode: "closed" }),
-      style = document.createElement("style");
-    style.textContent =
-      ":host{font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#fafafa} .bar{display:flex;align-items:center;gap:9px;padding:10px 12px;border:1px solid #3f3f46;border-radius:12px;background:#18181bf5;box-shadow:0 5px 24px #0005;max-width:min(520px,85vw);flex-wrap:wrap} strong{font-weight:650} span{color:#b7b7c2;font-size:11px}button{border:1px solid #3f3f46;border-radius:6px;padding:6px 9px;background:#27272a;color:#fafafa;cursor:pointer;font:inherit}button:hover{background:#3f3f46}button:focus-visible{outline:2px solid white;outline-offset:3px}.permission{background:#fafafa;color:#18181b}";
-    const bar = document.createElement("div");
-    bar.className = "bar";
-    const brand = document.createElement("strong");
-    brand.textContent = "tvissn.";
-    label = document.createElement("span");
-    label.textContent = "Подключаем плеер…";
-    playButton = document.createElement("button");
-    playButton.type = "button";
-    playButton.textContent = "Play / Pause";
-    playButton.addEventListener("click", () => {
-      if (!shared || !video) return;
-      ignoreUntil = Date.now() + 1400;
-      if (!shared.playing)
-        void video.play().catch(() => {
-          blocked = true;
-        });
-      intent({ type: shared.playing ? "pause" : "play" });
+  function updatePanel() {
+    if (!primary) return;
+    if (!widget) {
+      widget = createWidget({
+        video: () => video,
+        command: intent,
+        resync: () => apply(true),
+        rescan: () => {
+          void send({ type: "TVISSN_RESCAN_REQUEST" });
+        },
+        selectPlayer: (id) => {
+          void send({ type: "TVISSN_SELECT_PLAYER", playerId: id });
+        },
+        disconnect: () => {
+          void send({ type: "TVISSN_DISCONNECT" });
+        },
+        toggleFollow: (value) => {
+          void send({ type: "TVISSN_FOLLOW", enabled: value });
+        },
+        save: (prefs) => {
+          void send({ type: "TVISSN_PREFS_SET", prefs });
+        },
+      });
+      void send({ type: "TVISSN_PREFS_GET" }).then((result) => {
+        if (result?.ok) widget?.preferences(result.result as WidgetPreferences);
+      });
+    }
+    widget.update({
+      playing: !!shared?.playing,
+      connected,
+      blocked,
+      players: playerOptions,
+      selectedPlayer,
+      autoFollow,
     });
-    const sync = document.createElement("button");
-    sync.type = "button";
-    sync.textContent = "↻";
-    sync.ariaLabel = "Синхронизировать мой плеер";
-    sync.addEventListener("click", () => apply(true));
-    permissionButton = document.createElement("button");
-    permissionButton.className = "permission";
-    permissionButton.type = "button";
-    permissionButton.textContent = "Разрешить просмотр";
-    permissionButton.hidden = true;
-    permissionButton.addEventListener("click", () => {
-      blocked = false;
-      ignoreUntil = Date.now() + 1400;
-      void video
-        ?.play()
-        .then(() => {
-          permissionButton!.hidden = true;
-          status("ready");
-        })
-        .catch(() => {
-          blocked = true;
-          permissionButton!.hidden = false;
-        });
-    });
-    const hide = document.createElement("button");
-    hide.type = "button";
-    hide.textContent = "−";
-    hide.ariaLabel = "Свернуть панель tvissn";
-    let folded = false;
-    hide.addEventListener("click", () => {
-      folded = !folded;
-      for (const el of [label, playButton, sync, permissionButton])
-        if (el)
-          (el as HTMLElement).hidden =
-            folded || (el === permissionButton && !blocked);
-      hide.textContent = folded ? "+" : "−";
-    });
-    bar.append(brand, label, playButton, sync, permissionButton, hide);
-    shadow.append(style, bar);
-    document.documentElement.appendChild(host);
   }
   function removePanel() {
-    host?.remove();
-    host = null;
-    label = null;
-    playButton = null;
-    permissionButton = null;
+    widget?.destroy();
+    widget = null;
   }
   function apply(hard = false) {
     if (!video || !shared || !primary || !connected || !active) return;
@@ -137,7 +102,7 @@ function start() {
         ignoreUntil = Date.now() + 1400;
         void video.play().catch(() => {
           blocked = true;
-          if (permissionButton) permissionButton.hidden = false;
+          updatePanel();
           status("connecting");
         });
       }
@@ -147,13 +112,16 @@ function start() {
       }
     } catch {
       status("error");
-      if (label) label.textContent = "Плеер не принимает управление";
+      widget?.showError("Плеер не принимает управление");
     }
   }
   const onPlay = () => {
+    if (primary) {
+      blocked = false;
+      updatePanel();
+      status("ready");
+    }
     if (Date.now() < ignoreUntil || !primary || !connected) return;
-    blocked = false;
-    status("ready");
     if (!shared?.playing) intent({ type: "play" });
   };
   const onPause = () => {
@@ -192,6 +160,7 @@ function start() {
     ["waiting", onWaiting],
     ["loadedmetadata", onReady],
     ["canplay", onReady],
+    ["volumechange", () => widget?.volumeChanged()],
   ];
   function findVideo(report = true) {
     if (!active) return;
@@ -221,7 +190,10 @@ function start() {
       last = { position: 0, time: 0 };
       if (video)
         for (const [name, fn] of events) video.addEventListener(name, fn);
-      if (primary) apply(true);
+      if (primary) {
+        widget?.videoChanged();
+        apply(true);
+      }
     }
     if (report)
       void send({
@@ -271,17 +243,10 @@ function start() {
       removePanel();
       return;
     }
-    panel();
-    if (label)
-      label.textContent = connected
-        ? shared.playing
-          ? "Смотрим вместе"
-          : "Общая пауза"
-        : "Нет связи · переподключение";
-    if (playButton) {
-      playButton.textContent = shared.playing ? "Пауза" : "Смотреть";
-      playButton.disabled = !connected;
-    }
+    playerOptions = m.players || [];
+    selectedPlayer = m.selectedPlayer || null;
+    autoFollow = !!m.autoFollow;
+    updatePanel();
     if (!connected && video && !video.paused) {
       ignoreUntil = Date.now() + 1400;
       video.pause();
@@ -292,7 +257,21 @@ function start() {
     )
       apply(before?.mediaRevision !== shared.mediaRevision);
   });
-  const observer = new MutationObserver(() => findVideo());
+  let scanning = false;
+  const observer = new MutationObserver((records) => {
+    if (
+      scanning ||
+      records.every(
+        (r) => r.target instanceof Element && r.target.closest("[data-tvissn]"),
+      )
+    )
+      return;
+    scanning = true;
+    queueMicrotask(() => {
+      scanning = false;
+      findVideo();
+    });
+  });
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true,

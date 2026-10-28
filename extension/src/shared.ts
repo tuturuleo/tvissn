@@ -42,13 +42,25 @@ export function isNewer(a: string, b: string) {
   }
   return false;
 }
-export function credential(value: string) {
+export function parseInvitation(value: string): {
+  code: string;
+  server?: string;
+} {
   try {
-    return (
-      new URLSearchParams(new URL(value).hash.slice(1)).get("invite") ||
-      value.trim()
-    );
+    const url = new URL(value);
+    const code =
+      new URLSearchParams(url.hash.slice(1)).get("invite") ||
+      url.searchParams.get("invite");
+    if (!code) return { code: value.trim() };
+    const server =
+      url.protocol === "tvissn:"
+        ? serverOrigin(url.searchParams.get("server") || DEFAULT_SERVER)
+        : serverOrigin(url.origin);
+    return { code, server };
   } catch {
-    return value.trim();
+    return { code: value.trim() };
   }
+}
+export function credential(value: string) {
+  return parseInvitation(value).code;
 }

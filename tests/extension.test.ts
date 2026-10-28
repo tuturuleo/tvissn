@@ -5,25 +5,28 @@ import { readFile } from "node:fs/promises";
 import { build } from "esbuild";
 import { Window } from "happy-dom";
 import { applyCommand, type Playback } from "../server/protocol";
-import { invitationLink, inviteFromUrl } from "../src/lib/invite";
+
 import {
   credential,
+  parseInvitation,
   isNewer,
   samePage,
   serverOrigin,
 } from "../extension/src/shared";
 import identity from "../extension/identity.json";
 
-test("invitation uses a fragment, preserves code exactly and prefills from pasted link", () => {
-  const link = invitationLink(
-    "https://tvissn.onrender.com",
-    "private+code&value",
+test("extension parses website-free invitations and old fragment links", () => {
+  const url = new URL("tvissn://join");
+  url.searchParams.set("server", "https://tvissn.onrender.com");
+  url.searchParams.set("invite", "signed+invitation");
+  assert.deepEqual(parseInvitation(url.toString()), {
+    server: "https://tvissn.onrender.com",
+    code: "signed+invitation",
+  });
+  assert.equal(
+    credential("https://tvissn.onrender.com/#invite=old-code"),
+    "old-code",
   );
-  const url = new URL(link);
-  assert.equal(url.search, "?join=1");
-  assert.equal(url.pathname, "/");
-  assert.equal(inviteFromUrl(link), "private+code&value");
-  assert.equal(credential(link), "private+code&value");
 });
 test("stable ID derives from the checked-in public key; Chrome versions compare numerically", () => {
   const id = [
@@ -247,6 +250,65 @@ test("popup announces a newer version and its download button opens the release 
     assert.deepEqual(opened, [
       "https://tvissn.onrender.com/extension/tvissn-extension.zip",
     ]);
+  } finally {
+    await window.happyDOM.close();
+  }
+});
+test("popup shows room participants and local server ping", async () => {
+  const compiled = await build({
+    entryPoints: ["extension/src/popup.tsx"],
+    bundle: true,
+    write: false,
+    format: "iife",
+    target: "chrome116",
+    jsx: "automatic",
+    define: { "process.env.NODE_ENV": '"production"' },
+  });
+  const window = new Window({
+    url: `chrome-extension://${identity.id}/popup.html`,
+  });
+  (window as any).chrome = {
+    runtime: {
+      getManifest: () => ({ version: "0.2.0.0" }),
+      connect: () => ({ disconnect() {} }),
+      sendMessage: async (m: any) => ({
+        ok: true,
+        result:
+          m.type === "UPDATE"
+            ? { version: "0.2.0.0" }
+            : {
+                session: {
+                  id: "a",
+                  name: "Анна",
+                  server: "https://example.com",
+                },
+                connected: true,
+                ping: 42,
+                enabled: false,
+                snapshot: {
+                  participants: [
+                    { id: "a", name: "Анна", status: "ready" },
+                    { id: "b", name: "Борис", status: "buffering" },
+                  ],
+                  playback: { externalUrl: null },
+                },
+              },
+      }),
+    },
+    tabs: { query: async () => [] },
+  };
+  window.document.body.innerHTML = '<div id="root"></div>';
+  try {
+    window.eval(compiled.outputFiles[0].text);
+    for (
+      let i = 0;
+      i < 30 && !window.document.body.textContent.includes("Борис");
+      i++
+    )
+      await new Promise((r) => setTimeout(r, 10));
+    assert.match(window.document.body.textContent, /Борис/);
+    assert.match(window.document.body.textContent, /42 мс/);
+    assert.match(window.document.body.textContent, /Загружает видео/);
   } finally {
     await window.happyDOM.close();
   }

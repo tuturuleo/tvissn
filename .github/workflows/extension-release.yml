@@ -13,6 +13,8 @@ on:
       - "src/index.css"
       - "package.json"
       - "package-lock.json"
+      - "vite.config.ts"
+      - "tsconfig.json"
       - ".github/workflows/extension-release.yml"
   workflow_dispatch:
 permissions:

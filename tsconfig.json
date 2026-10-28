@@ -15,7 +15,7 @@
     "paths": {
       "@/*": ["./src/*"]
     },
-    "types": ["vite/client", "youtube", "node", "chrome"]
+    "types": ["vite/client", "node", "chrome"]
   },
   "include": ["src", "server", "tests", "vite.config.ts", "extension/src"]
 }

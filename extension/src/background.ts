@@ -1,3 +1,4 @@
+import { FollowMode } from "./follow";
 import { io, type Socket } from "socket.io-client";
 import {
   DEFAULT_SERVER,
@@ -16,7 +17,8 @@ let targetTab: number | null = null,
   connected = false,
   error = "",
   clockOffset = 0,
-  bestRtt = Infinity;
+  bestRtt = Infinity,
+  ping: number | null = null;
 let candidates = new Map<
   string,
   {
@@ -30,26 +32,62 @@ let candidates = new Map<
     seenAt: number;
   }
 >();
-let pending: Promise<void> | null = null,
-  clockTimer: ReturnType<typeof setInterval> | undefined;
+let clockTimer: ReturnType<typeof setInterval> | undefined;
+let widgetPrefs: Record<string, unknown> = {};
+const follow = new FollowMode({
+  hasPermission: (origin) =>
+    chrome.permissions.contains({ origins: [origin + "/*"] }),
+  navigate: async (tabId, url) => {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.url && samePage(tab.url, url)) {
+      queueMicrotask(() => follow.complete(tabId, url));
+      return;
+    }
+    await Promise.allSettled(
+      [...new Set([...candidates.values()].map((c) => c.frameId))].map(
+        (frameId) =>
+          chrome.tabs.sendMessage(tabId, { type: "TVISSN_STOP" }, { frameId }),
+      ),
+    );
+    candidates.clear();
+    selectedPlayer = null;
+    await chrome.tabs.update(tabId, { url });
+  },
+  notify: (message) => {
+    error = message;
+    updateBadge();
+  },
+  changed: () => {
+    void saveWatch();
+    void deliver();
+  },
+});
+async function saveWatch() {
+  await chrome.storage.local.set({
+    watch: { enabled, tabId: targetTab, autoFollow: follow.enabled },
+  });
+}
 const init = (async () => {
   await chrome.storage.local.setAccessLevel({
     accessLevel: "TRUSTED_CONTEXTS",
   });
   const stored = await chrome.storage.local.get<{
     session?: ExtensionSession;
-    watch?: { tabId: number | null; enabled: boolean };
-  }>(["session", "watch"]);
+    watch?: { tabId: number | null; enabled: boolean; autoFollow?: boolean };
+    widgetPrefs?: Record<string, unknown>;
+  }>(["session", "watch", "widgetPrefs"]);
+  widgetPrefs = stored.widgetPrefs || {};
   session = stored.session || null;
   if (stored.watch) {
     targetTab = stored.watch.tabId;
     enabled = stored.watch.enabled;
+    follow.configure(!!stored.watch.autoFollow, targetTab);
   }
   if (enabled && session) await restore();
 })();
 function updateBadge() {
   void chrome.action.setBadgeText({
-    text: enabled ? (connected ? "ON" : "…") : "",
+    text: follow.pendingGrant ? "!" : enabled ? (connected ? "ON" : "…") : "",
   });
   void chrome.action.setBadgeBackgroundColor({
     color: connected ? "#476a58" : "#595052",
@@ -57,14 +95,19 @@ function updateBadge() {
 }
 function state() {
   return {
-    session: session ? { name: session.name, server: session.server } : null,
+    session: session
+      ? { id: session.id, name: session.name, server: session.server }
+      : null,
     connected,
     enabled,
     targetTab,
     snapshot,
+    ping,
     error,
     candidates: [...candidates.values()],
     selectedPlayer,
+    autoFollow: follow.enabled,
+    pendingNavigation: follow.pendingGrant,
     installedVersion: chrome.runtime.getManifest().version,
   };
 }
@@ -85,6 +128,7 @@ function connect() {
       (e: Error | null, r: { serverTime: number }) => {
         if (e || !r) return;
         const rtt = Date.now() - start;
+        ping = rtt;
         if (rtt < bestRtt + 20) {
           bestRtt = Math.min(rtt, bestRtt);
           clockOffset = r.serverTime - (start + rtt / 2);
@@ -108,10 +152,16 @@ function connect() {
     )
       return;
     snapshot = next;
+    if (enabled)
+      void follow.update(
+        next.playback.externalUrl,
+        next.playback.mediaRevision,
+      );
     void deliver();
   });
   s.on("disconnect", (reason) => {
     connected = false;
+    ping = null;
     updateBadge();
     void deliver();
     if (reason === "io server disconnect") {
@@ -194,6 +244,9 @@ async function deliver() {
           serverTime: Date.now() + clockOffset,
           primary: frameId === primary?.frameId,
           videoKey: primary?.videoKey,
+          players: all.map((p) => ({ id: p.id, title: p.title })),
+          selectedPlayer,
+          autoFollow: follow.enabled,
         },
         { frameId },
       )
@@ -246,9 +299,11 @@ async function checkUpdate() {
 }
 async function stop() {
   enabled = false;
+  follow.configure(false, null);
   socket?.disconnect();
   socket = null;
   connected = false;
+  ping = null;
   clearInterval(clockTimer);
   if (targetTab !== null)
     for (const c of candidates.values())
@@ -311,6 +366,50 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         .catch((e) => reply({ ok: false, error: e.message }));
       return true;
     }
+    if (message.type === "TVISSN_PREFS_GET") {
+      reply({ ok: true, result: widgetPrefs });
+      return;
+    }
+    if (message.type === "TVISSN_PREFS_SET") {
+      const next = message.prefs || {};
+      const clean: Record<string, unknown> = {};
+      for (const key of ["normal", "fullscreen"]) {
+        const p = next[key];
+        if (p && Number.isFinite(p.x) && Number.isFinite(p.y))
+          clean[key] = {
+            x: Math.max(0, Math.min(1, p.x)),
+            y: Math.max(0, Math.min(1, p.y)),
+          };
+      }
+      if (Number.isFinite(next.volume))
+        clean.volume = Math.max(0, Math.min(1, next.volume));
+      if (typeof next.muted === "boolean") clean.muted = next.muted;
+      if (typeof next.folded === "boolean") clean.folded = next.folded;
+      widgetPrefs = { ...widgetPrefs, ...clean };
+      void chrome.storage.local.set({ widgetPrefs });
+      reply({ ok: true });
+      return;
+    }
+    if (message.type === "TVISSN_RESCAN_REQUEST") {
+      void rescan().then(() => reply({ ok: true }));
+      return true;
+    }
+    if (message.type === "TVISSN_SELECT_PLAYER") {
+      selectedPlayer =
+        typeof message.playerId === "string" ? message.playerId : null;
+      void deliver();
+      reply({ ok: true });
+      return;
+    }
+    if (message.type === "TVISSN_DISCONNECT") {
+      void stop().then(() => reply({ ok: true }));
+      return true;
+    }
+    if (message.type === "TVISSN_FOLLOW") {
+      setFollow(!!message.enabled);
+      reply({ ok: true });
+      return;
+    }
     if (message.type === "TVISSN_STATUS") {
       socket?.emit("status", message.status);
       reply({ ok: true });
@@ -324,6 +423,29 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     .then(async () => {
       if (message.type === "STATE") return state();
       if (message.type === "UPDATE") return checkUpdate();
+      if (message.type === "INVITE") {
+        if (!session) throw new Error("Сначала войдите.");
+        const r = await fetch(session.server + "/api/extension/invite", {
+          method: "POST",
+          headers: { Authorization: "Bearer " + session.token },
+          signal: AbortSignal.timeout(15000),
+        });
+        const data = await r.json();
+        if (!r.ok)
+          throw new Error(data.error || "Не удалось создать приглашение.");
+        const url = new URL("tvissn://join");
+        url.searchParams.set("server", session.server);
+        url.searchParams.set("invite", data.code);
+        return { invitation: url.toString(), expiresAt: data.expiresAt };
+      }
+      if (message.type === "FOLLOW") {
+        setFollow(!!message.enabled);
+        return state();
+      }
+      if (message.type === "NAVIGATE") {
+        await follow.retry();
+        return state();
+      }
       if (message.type === "LOGIN") {
         const server = serverOrigin(message.server || DEFAULT_SERVER);
         const res = await fetch(server + "/api/extension/login", {
@@ -373,9 +495,8 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         enabled = true;
         selectedPlayer = null;
         candidates.clear();
-        await chrome.storage.local.set({
-          watch: { enabled: true, tabId: targetTab },
-        });
+        follow.configure(follow.enabled, targetTab);
+        await saveWatch();
         connect();
         if (!connected)
           throw new Error(
@@ -397,13 +518,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         return state();
       }
       if (message.type === "RESCAN") {
-        if (targetTab === null) throw new Error("Сначала подключите вкладку.");
-        candidates.clear();
-        selectedPlayer = null;
-        await inject(targetTab);
-        void chrome.tabs
-          .sendMessage(targetTab, { type: "TVISSN_RESCAN" })
-          .catch(() => {});
+        await rescan();
         return state();
       }
       if (message.type === "COMMAND") {
@@ -451,9 +566,32 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     );
   return true;
 });
-chrome.tabs.onUpdated.addListener((tabId, change) => {
-  if (enabled && tabId === targetTab && change.status === "complete")
+function setFollow(value: boolean) {
+  error = "";
+  follow.configure(value, targetTab);
+  if (value && snapshot)
+    void follow.update(
+      snapshot.playback.externalUrl,
+      snapshot.playback.mediaRevision,
+    );
+  updateBadge();
+}
+async function rescan() {
+  if (targetTab === null) throw new Error("Сначала подключите вкладку.");
+  candidates.clear();
+  selectedPlayer = null;
+  await inject(targetTab);
+  void chrome.tabs
+    .sendMessage(targetTab, { type: "TVISSN_RESCAN" })
+    .catch(() => {});
+}
+chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
+  if (!enabled || tabId !== targetTab) return;
+  if (change.url) follow.onUrl(tabId, change.url);
+  if (change.status === "complete") {
+    if (tab.url) follow.complete(tabId, tab.url);
     void init.then(() => inject(tabId));
+  }
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (tabId === targetTab) void stop();
