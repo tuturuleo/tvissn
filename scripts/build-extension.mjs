@@ -87,6 +87,7 @@ await writeFile(
   out + "/INSTALL.txt",
   `tvissn ${release.version}\nID: ${identity.id}\n\nChrome/Chromium: extract the ZIP to a permanent folder; open chrome://extensions, enable Developer mode and choose Load unpacked. Select this folder.\n\nUpdate: replace the contents of the SAME folder with the new ZIP, then click Reload on chrome://extensions. Do not delete the extension. Its ID and settings remain stable.\n`,
 );
+await writeFile(out + "/LUCIDE-LICENSE.txt", await readFile("node_modules/lucide/LICENSE", "utf8"));
 const files = {};
 for (const name of (await readdir(out)).sort())
   files[name] = [

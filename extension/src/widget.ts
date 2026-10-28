@@ -1,3 +1,6 @@
+import { Play, Pause, RefreshCw, Volume2, VolumeX, Maximize, Ellipsis,
+  ChevronDown, ChevronUp, GripVertical, RotateCcw, RotateCw, type IconNode } from "lucide";
+
 export interface Point {
   x: number;
   y: number;
@@ -29,19 +32,11 @@ interface Options {
   toggleFollow: (enabled: boolean) => void;
   save: (prefs: WidgetPreferences) => void;
 }
-const paths: Record<string, string> = {
-  play: "M8 5v14l11-7z",
-  rewind: "M3 10V4m0 0h6M3 4l4 4a8 8 0 1 1-2 8M9 11v6M13 11h3v6h-3z",
-  forward: "M21 10V4m0 0h-6M21 4l-4 4a8 8 0 1 0 2 8M9 11v6M13 11h3v6h-3z",
-  pause: "M8 5v14M16 5v14",
-  sync: "M20 7v5h-5M4 17v-5h5M6.1 8a7 7 0 0 1 11.6-2L20 9M4 15l2.3 3A7 7 0 0 0 18 16",
-  volume: "M11 5 6 9H3v6h3l5 4zM15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14",
-  muted: "M11 5 6 9H3v6h3l5 4zM16 9l5 6M21 9l-5 6",
-  fullscreen: "M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5",
-  menu: "M5 12h.01M12 12h.01M19 12h.01",
-  fold: "M6 9l6 6 6-6",
-  expand: "M6 15l6-6 6 6",
-  grip: "M8 5h.01M16 5h.01M8 12h.01M16 12h.01M8 19h.01M16 19h.01",
+const icons: Record<string, IconNode> = {
+  play: Play, pause: Pause, sync: RefreshCw, volume: Volume2,
+  muted: VolumeX, fullscreen: Maximize, menu: Ellipsis,
+  fold: ChevronDown, expand: ChevronUp, grip: GripVertical,
+  rewind: RotateCcw, forward: RotateCw,
 };
 export function clampPoint(
   p: Point,
@@ -94,15 +89,31 @@ export function createWidget(options: Options) {
     "all:initial;position:fixed;inset:auto;margin:0;padding:0;border:0;background:transparent;overflow:visible;z-index:2147483647;max-width:calc(100vw - 16px);box-sizing:border-box;";
   const root = host.attachShadow({ mode: "open" }),
     style = doc.createElement("style");
-  style.textContent = `:host{color-scheme:dark}*{box-sizing:border-box}.widget{font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#fafafa;position:relative;max-width:calc(100vw - 16px);opacity:1;visibility:visible;transition:opacity 140ms ease,visibility 0s linear 0s;filter:drop-shadow(0 8px 24px #0005)}.widget.idle{opacity:0;visibility:hidden;pointer-events:none;transition:opacity 300ms cubic-bezier(.2,0,0,1),visibility 0s linear 300ms}.bar{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:6px;border:1px solid #ffffff26;border-radius:12px;background:#18181bef;backdrop-filter:blur(18px);max-width:calc(100vw - 16px)}button,select,input{font:inherit}button{display:inline-flex;align-items:center;justify-content:center;gap:7px;flex-shrink:0;min-width:30px;height:30px;padding:0 7px;border:0;border-radius:7px;background:transparent;color:#dedee4;cursor:pointer;touch-action:manipulation}button:hover{background:#ffffff13;color:#fff}button:active{background:#ffffff20}button:disabled{opacity:.4;cursor:default}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #d4d4d8;outline-offset:2px}svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}.handle{cursor:grab;touch-action:none;user-select:none;gap:0;padding:0 7px}.handle:active{cursor:grabbing}.handle svg{width:15px;color:#71717a}.handle.connected svg{color:#a1a1aa}.play{background:#f4f4f5;color:#18181b}.play:hover{background:#d4d4d8;color:#18181b}.volume{display:flex;align-items:center;gap:2px}.volume input{width:65px;height:20px;accent-color:#e4e4e7;cursor:pointer}.permission{width:auto;padding:0 9px;background:#f4f4f5;color:#18181b;font-size:11px}.notice{display:none;background:#211a17;border:1px solid #785b45;border-radius:8px;font-size:11px;line-height:1.5;padding:9px 11px;margin-bottom:7px;max-width:360px;color:#f0d2b8}.notice.visible{display:block}.menu{position:absolute;left:0;top:calc(100% + 7px);width:240px;padding:8px;border:1px solid #ffffff26;border-radius:10px;background:#18181bf8;backdrop-filter:blur(18px);box-shadow:0 8px 24px #0005}.menu.above{top:auto;bottom:calc(100% + 7px)}.menu[hidden],[hidden]{display:none!important}.menu button{width:100%;justify-content:flex-start;font-size:12px;padding:0 9px;height:33px}.menu .row{display:flex;gap:4px}.menu .row button{width:50%;justify-content:center;border:1px solid #ffffff15}.menu label{display:block;padding:8px 9px;color:#a1a1aa;font-size:11px}.menu select{width:100%;height:30px;border:1px solid #3f3f46;border-radius:6px;background:#27272a;color:#fafafa;margin-top:6px}.menu small{display:block;color:#a1a1aa;font-size:10px;padding:7px 9px;line-height:1.5}.status{padding:6px 9px;font-size:10px;color:#a1a1aa;border-bottom:1px solid #ffffff15;margin-bottom:4px}.divider{height:19px;width:1px;background:#ffffff19;margin:0 3px}.widget.folded .detail{display:none}.widget.dragging{transition:none;user-select:none}@media(prefers-reduced-motion:reduce){.widget,.widget.idle{transition:none!important}}@media(max-width:420px){.volume input{width:44px}.handle{padding-right:5px}.bar{gap:1px}button{min-width:28px;padding:0 6px}}`;
+  style.textContent = `:host{color-scheme:dark}*{box-sizing:border-box}.widget{font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#fafafa;position:relative;max-width:calc(100vw - 16px);opacity:1;visibility:visible;transition:opacity 140ms ease,visibility 0s linear 0s;filter:drop-shadow(0 8px 24px #0005)}.widget.idle{opacity:0;visibility:hidden;pointer-events:none;transition:opacity 300ms cubic-bezier(.2,0,0,1),visibility 0s linear 300ms}.bar{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:6px;border:1px solid #ffffff26;border-radius:12px;background:#18181bef;backdrop-filter:blur(18px);max-width:calc(100vw - 16px)}button,select,input{font:inherit}button{display:inline-flex;align-items:center;justify-content:center;gap:7px;flex-shrink:0;min-width:30px;height:30px;padding:0 7px;border:0;border-radius:7px;background:transparent;color:#dedee4;cursor:pointer;touch-action:manipulation}button:hover{background:#ffffff13;color:#fff}button:active{background:#ffffff20}button:disabled{opacity:.4;cursor:default}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #d4d4d8;outline-offset:2px}svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}.handle{cursor:grab;touch-action:none;user-select:none;gap:0;padding:0 7px}.handle:active{cursor:grabbing}.handle svg{width:15px;color:#71717a}.handle.connected svg{color:#a1a1aa}.play{background:#f4f4f5;color:#18181b}.play:hover{background:#d4d4d8;color:#18181b}.volume{display:flex;align-items:center;gap:2px}.volume input{width:65px;height:20px;accent-color:#e4e4e7;cursor:pointer}.permission{width:auto;padding:0 9px;background:#f4f4f5;color:#18181b;font-size:11px}.notice{display:none;background:#211a17;border:1px solid #785b45;border-radius:8px;font-size:11px;line-height:1.5;padding:9px 11px;margin-bottom:7px;max-width:360px;color:#f0d2b8}.notice.visible{display:block}.menu{position:absolute;left:0;top:calc(100% + 7px);width:240px;padding:8px;border:1px solid #ffffff26;border-radius:10px;background:#18181bf8;backdrop-filter:blur(18px);box-shadow:0 8px 24px #0005}.menu.above{top:auto;bottom:calc(100% + 7px)}.menu[hidden],[hidden]{display:none!important}.menu button{width:100%;justify-content:flex-start;font-size:12px;padding:0 9px;height:33px}.menu .row{display:flex;gap:4px}.menu .row button{width:50%;justify-content:center;border:1px solid #ffffff15}.menu label{display:block;padding:8px 9px;color:#a1a1aa;font-size:11px}.menu select{width:100%;height:30px;border:1px solid #3f3f46;border-radius:6px;background:#27272a;color:#fafafa;margin-top:6px}.menu small{display:block;color:#a1a1aa;font-size:10px;padding:7px 9px;line-height:1.5}.status{padding:6px 9px;font-size:10px;color:#a1a1aa;border-bottom:1px solid #ffffff15;margin-bottom:4px}.divider{height:19px;width:1px;background:#ffffff19;margin:0 3px}.widget.folded .detail{display:none}.widget.dragging{transition:none;user-select:none}@media(prefers-reduced-motion:reduce){.widget,.widget.idle{transition:none!important}}@media(max-width:420px){.volume input{width:44px}.handle{padding-right:5px}.bar{gap:1px}button{min-width:28px;padding:0 6px}}`;
   function icon(button: HTMLElement, name: string) {
     button.replaceChildren();
-    const svg = doc.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("viewBox", "0 0 24 24");
+    const [tag, attrs, children] = icons[name];
+    const svg = doc.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [key, value] of Object.entries(attrs)) svg.setAttribute(key, String(value));
     svg.setAttribute("aria-hidden", "true");
-    const path = doc.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", paths[name]);
-    svg.append(path);
+    svg.setAttribute("data-icon", name);
+    for (const [childTag, childAttrs] of children || []) {
+      const child = doc.createElementNS("http://www.w3.org/2000/svg", childTag);
+      for (const [key, value] of Object.entries(childAttrs)) child.setAttribute(key, String(value));
+      svg.append(child);
+    }
+    if (name === "rewind" || name === "forward") {
+      const label = doc.createElementNS("http://www.w3.org/2000/svg", "text");
+      label.setAttribute("x", "12");
+      label.setAttribute("y", "15.5");
+      label.setAttribute("text-anchor", "middle");
+      label.setAttribute("fill", "currentColor");
+      label.setAttribute("stroke", "none");
+      label.setAttribute("font-size", "8");
+      label.setAttribute("font-weight", "600");
+      label.textContent = "10";
+      svg.append(label);
+    }
     button.append(svg);
   }
   function button(name: string, title: string, action: () => void) {
