@@ -1,2 +1,4 @@
 /// <reference types="vite/client" />
-interface Window { onYouTubeIframeAPIReady?: () => void; }
+interface Window {
+  onYouTubeIframeAPIReady?: () => void;
+}
