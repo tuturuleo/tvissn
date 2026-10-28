@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { once } from "node:events";
@@ -16,6 +16,15 @@ test(
   { timeout: 30000 },
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "tvissn-test-"));
+    await mkdir(join(dir, "dist", "extension"), { recursive: true });
+    await writeFile(
+      join(dir, "dist", "index.html"),
+      "<!doctype html><p>test</p>",
+    );
+    await writeFile(
+      join(dir, "dist", "extension", "tvissn-extension.zip"),
+      "test-zip-fixture",
+    );
     const port = 20000 + Math.floor(Math.random() * 20000),
       origin = `http://127.0.0.1:${port}`;
     const code = "integration-only-invite";
@@ -101,6 +110,17 @@ test(
       });
     try {
       await start();
+      assert.equal(
+        (await fetch(origin + "/")).headers.get("cache-control"),
+        "no-store",
+      );
+      assert.equal(
+        (
+          await fetch(origin + "/extension/tvissn-extension.zip?v=test")
+        ).headers.get("cache-control"),
+        "no-store",
+      );
+      assert.equal((await fetch(origin + "/assets/missing.js")).status, 404);
       assert.equal((await fetch(origin + "/api/session")).status, 401);
       assert.equal(
         (

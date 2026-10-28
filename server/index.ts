@@ -79,6 +79,8 @@ function validOrigin(origin: string | undefined) {
   return !!origin && allowedOrigins.has(origin);
 }
 app.addHook("onSend", async (_req, reply) => {
+  if (!_req.url.startsWith("/assets/") || reply.statusCode >= 400)
+    reply.header("Cache-Control", "no-store");
   if (_req.headers.origin === extensionOrigin) {
     reply
       .header("Access-Control-Allow-Origin", extensionOrigin)
@@ -372,16 +374,9 @@ const checkpoint = setInterval(() => {
     .catch((e) => app.log.error(e));
 }, 15000);
 if (existsSync("dist/index.html")) {
-  await app.register(fastifyStatic, {
-    root: resolve("dist"),
-    maxAge: "1h",
-    setHeaders(res, path) {
-      if (path.endsWith(".html") || path.includes("/extension/"))
-        res.setHeader("Cache-Control", "no-store");
-    },
-  });
+  await app.register(fastifyStatic, { root: resolve("dist"), maxAge: "1h" });
   app.setNotFoundHandler((req, reply) => {
-    if (req.url.startsWith("/api/"))
+    if (req.url.startsWith("/api/") || req.url.startsWith("/assets/"))
       return reply.code(404).send({ error: "Не найдено" });
     reply.header("Cache-Control", "no-cache");
     return reply.sendFile("index.html");
