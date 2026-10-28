@@ -2,6 +2,7 @@ import { positionAt } from "./timeline";
 import { z } from "zod";
 export interface Playback {
   videoId: string | null;
+  externalUrl?: string | null;
   mediaRevision: number;
   position: number;
   playing: boolean;
@@ -24,7 +25,7 @@ export interface Snapshot {
 export const rates = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 export const commandSchema = z.discriminatedUnion("type", [
   z.object({
-    type: z.literal("load"),
+    type: z.enum(["load", "loadExternal"]),
     commandId: z.string().uuid(),
     url: z.string().max(2048),
   }),
@@ -88,12 +89,38 @@ export function applyCommand(
   name: string,
   now: number,
 ): Playback {
+  if (c.type === "loadExternal") {
+    let url: URL;
+    try {
+      url = new URL(c.url);
+    } catch {
+      throw new Error("Вставьте ссылку на страницу с видео.");
+    }
+    if (
+      !["https:", "http:"].includes(url.protocol) ||
+      url.username ||
+      url.password
+    )
+      throw new Error("Поддерживаются только HTTP(S)-ссылки без пароля.");
+    return {
+      videoId: null,
+      externalUrl: url.toString(),
+      mediaRevision: s.mediaRevision + 1,
+      position: 0,
+      playing: false,
+      rate: 1,
+      anchor: now,
+      revision: s.revision + 1,
+      updatedBy: name,
+    };
+  }
   if (c.type === "load") {
     const parsed = parseYoutube(c.url);
     if (!parsed)
       throw new Error("Вставьте корректную ссылку на видео YouTube.");
     return {
       videoId: parsed.videoId,
+      externalUrl: null,
       mediaRevision: s.mediaRevision + 1,
       position: parsed.position,
       playing: false,
@@ -103,7 +130,8 @@ export function applyCommand(
       updatedBy: name,
     };
   }
-  if (!s.videoId || c.mediaRevision !== s.mediaRevision)
+  if (!("mediaRevision" in c)) throw new Error("Некорректная команда.");
+  if ((!s.videoId && !s.externalUrl) || c.mediaRevision !== s.mediaRevision)
     throw new Error("Видео уже изменилось. Состояние обновлено.");
   if (c.type === "rate" && c.rate === undefined)
     throw new Error("Выберите скорость.");

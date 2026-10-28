@@ -40,6 +40,8 @@ import {
 } from "@/components/ui/tooltip";
 import { YoutubePlayer } from "@/components/youtube-player";
 import { useRoom } from "@/lib/use-room";
+import { invitationLink, takeInvitation } from "@/lib/invite";
+import { positionAt } from "../server/timeline";
 import { formatTime } from "@/lib/youtube";
 
 interface Session {
@@ -98,6 +100,7 @@ export function App() {
           onExpired={() => setSession(null)}
           onLogout={async () => {
             await fetch("/api/logout", { method: "POST" });
+            sessionStorage.removeItem("tvissn-invite");
             setSession(null);
           }}
         />
@@ -123,7 +126,7 @@ function Login({
   const [name, setName] = useState(
       () => localStorage.getItem("tvissn-name") || "",
     ),
-    [code, setCode] = useState(""),
+    [code, setCode] = useState(takeInvitation),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   async function submit(e: FormEvent) {
@@ -145,6 +148,7 @@ function Login({
               : "Не удалось войти."),
         );
       localStorage.setItem("tvissn-name", name.trim());
+      sessionStorage.setItem("tvissn-invite", code.trim());
       onLogin(data);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Не удалось войти.");
@@ -263,7 +267,9 @@ function Login({
       </main>
       <footer className="site-footer">
         <span>Хорошее видео становится лучше вместе.</span>
-        <span>tvissn · watch together</span>
+        <a href="/extension" className="underline underline-offset-4">
+          Расширение tvissn
+        </a>
       </footer>
     </div>
   );
@@ -280,7 +286,8 @@ function Room({
   const room = useRoom(onExpired),
     [url, setUrl] = useState(""),
     [copied, setCopied] = useState(false),
-    [help, setHelp] = useState(false);
+    [help, setHelp] = useState(false),
+    [source, setSource] = useState<"youtube" | "external">("youtube");
   const [metrics, setMetrics] = useState({
       position: 0,
       duration: 0,
@@ -295,7 +302,16 @@ function Room({
   const player = useRef<YT.Player | null>(null),
     surface = useRef<HTMLDivElement>(null);
   const state = room.snapshot?.playback;
-  const hasVideo = !!state?.videoId,
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!state?.externalUrl) return;
+    const timer = setInterval(() => tick((n) => n + 1), 500);
+    return () => clearInterval(timer);
+  }, [state?.externalUrl]);
+  const playPosition = state?.externalUrl
+    ? positionAt(state, room.serverNow())
+    : metrics.position;
+  const hasVideo = !!(state?.videoId || state?.externalUrl),
     disabled = !room.connected || !hasVideo;
   const sync = () => {
     room.resync();
@@ -309,7 +325,10 @@ function Room({
   const load = (e: FormEvent) => {
     e.preventDefault();
     if (!url.trim()) return;
-    room.command({ type: "load", url: url.trim() });
+    room.command({
+      type: source === "youtube" ? "load" : "loadExternal",
+      url: url.trim(),
+    });
   };
   const mrev = state?.mediaRevision;
   useEffect(() => {
@@ -328,26 +347,26 @@ function Room({
         e.ctrlKey
       )
         return;
-      if (!room.connected || !state?.videoId) return;
+      if (!room.connected || (!state?.videoId && !state?.externalUrl)) return;
       if (e.code === "Space") {
         e.preventDefault();
         room.command({ type: state.playing ? "pause" : "play" });
       }
       if (e.code === "ArrowRight") {
         e.preventDefault();
-        seek(metrics.position + 10);
+        seek(playPosition + 10);
       }
       if (e.code === "ArrowLeft") {
         e.preventDefault();
-        seek(metrics.position - 10);
+        seek(playPosition - 10);
       }
     };
     window.addEventListener("keydown", keys);
     return () => window.removeEventListener("keydown", keys);
-  }, [state, room.connected, metrics.position]);
+  }, [state, room.connected, playPosition]);
   const participants = room.snapshot?.participants || [];
   const names = participants.length;
-  const position = scrub ?? metrics.position;
+  const position = scrub ?? playPosition;
   return (
     <div className="room-page">
       <header className="site-header">
@@ -392,13 +411,20 @@ function Room({
               Смотрим вместе<span className="text-muted-foreground">.</span>
             </h1>
           </div>
-          <Hint label="Скопировать адрес сайта. Код приглашения передайте отдельно.">
+          <Hint label="Скопировать ссылку с заполненным кодом приглашения.">
             <Button
               variant="outline"
               aria-label="Пригласить друга: скопировать ссылку"
               onClick={async () => {
                 try {
-                  await navigator.clipboard.writeText(location.origin);
+                  const code =
+                    sessionStorage.getItem("tvissn-invite") ||
+                    window.prompt("Введите код приглашения для ссылки:");
+                  if (!code) return;
+                  sessionStorage.setItem("tvissn-invite", code);
+                  await navigator.clipboard.writeText(
+                    invitationLink(location.origin, code),
+                  );
                   setCopied(true);
                   setTimeout(() => setCopied(false), 2000);
                 } catch {
@@ -417,6 +443,30 @@ function Room({
         </div>
         <div className="room-grid">
           <section className="watch-column" aria-label="Совместный просмотр">
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant={source === "youtube" ? "secondary" : "ghost"}
+                onClick={() => setSource("youtube")}
+              >
+                YouTube
+              </Button>
+              <Button
+                size="sm"
+                variant={source === "external" ? "secondary" : "ghost"}
+                onClick={() => setSource("external")}
+              >
+                Внешний сайт
+              </Button>
+              <a
+                className="ml-auto text-xs text-muted-foreground underline underline-offset-4"
+                href="/extension"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Скачать расширение
+              </a>
+            </div>
             <form className="source-form" onSubmit={load}>
               <div className="source-icon">
                 <Link2 className="size-4" />
@@ -427,7 +477,11 @@ function Room({
               <Input
                 id="video-url"
                 type="url"
-                placeholder="Вставьте ссылку на видео YouTube"
+                placeholder={
+                  source === "youtube"
+                    ? "Вставьте ссылку на видео YouTube"
+                    : "Ссылка на страницу с видео"
+                }
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 disabled={!room.connected}
@@ -458,7 +512,34 @@ function Room({
               </div>
             )}
             <div className="player-card" ref={surface}>
-              {hasVideo && state ? (
+              {state?.externalUrl ? (
+                <div className="empty-player external-player">
+                  <Link2 className="mb-5 size-8 text-muted-foreground" />
+                  <h2>Смотрим на другом сайте</h2>
+                  <p className="max-w-sm px-4">
+                    Откройте страницу у себя и подключите вкладку в расширении
+                    tvissn.
+                  </p>
+                  <a
+                    href={state.externalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-5"
+                  >
+                    <Button>
+                      Открыть страницу <ArrowRight />
+                    </Button>
+                  </a>
+                  <a
+                    href="/extension"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-4 text-xs text-muted-foreground underline"
+                  >
+                    Установить расширение
+                  </a>
+                </div>
+              ) : hasVideo && state ? (
                 <YoutubePlayer
                   state={state}
                   connected={room.connected}
@@ -514,7 +595,7 @@ function Room({
                         size="icon"
                         aria-label="Назад на 10 секунд"
                         disabled={disabled}
-                        onClick={() => seek(metrics.position - 10)}
+                        onClick={() => seek(playPosition - 10)}
                       >
                         <SkipBack />
                       </Button>
@@ -556,7 +637,7 @@ function Room({
                         size="icon"
                         aria-label="Вперёд на 10 секунд"
                         disabled={disabled}
-                        onClick={() => seek(metrics.position + 10)}
+                        onClick={() => seek(playPosition + 10)}
                       >
                         <SkipForward />
                       </Button>
@@ -652,10 +733,12 @@ function Room({
                 </span>
                 <h2 className="truncate">
                   {hasVideo
-                    ? metrics.title || "Видео YouTube"
+                    ? state?.externalUrl
+                      ? new URL(state.externalUrl).hostname
+                      : metrics.title || "Видео YouTube"
                     : "Выберите первое видео"}
                 </h2>
-                {hasVideo && (
+                {state?.videoId && (
                   <a
                     className="video-origin"
                     target="_blank"
@@ -668,7 +751,7 @@ function Room({
               </div>
               <Badge variant="secondary" className="shrink-0 gap-1.5">
                 <Radio className="size-3" />
-                YouTube
+                {state?.externalUrl ? "Внешний сайт" : "YouTube"}
               </Badge>
             </div>
             <div className="watch-footnote">
@@ -765,7 +848,9 @@ function Room({
       </main>
       <footer className="site-footer">
         <span>Один экран. Один момент.</span>
-        <span>tvissn · watch together</span>
+        <a href="/extension" className="underline underline-offset-4">
+          Расширение tvissn
+        </a>
       </footer>
     </div>
   );

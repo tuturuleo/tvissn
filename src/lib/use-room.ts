@@ -83,7 +83,7 @@ export function useRoom(onExpired: () => void) {
   const command = useCallback(
     (
       partial:
-        | Omit<Extract<Command, { type: "load" }>, "commandId">
+        | Omit<Extract<Command, { type: "load" | "loadExternal" }>, "commandId">
         | {
             type: "play" | "pause" | "seek" | "rate" | "ended";
             position?: number;
@@ -99,7 +99,7 @@ export function useRoom(onExpired: () => void) {
       const payload = {
         ...partial,
         commandId: crypto.randomUUID(),
-        ...(partial.type !== "load"
+        ...(partial.type !== "load" && partial.type !== "loadExternal"
           ? { mediaRevision: latest.current?.playback.mediaRevision }
           : {}),
       };

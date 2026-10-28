@@ -12,8 +12,10 @@
     "allowImportingTsExtensions": true,
     "noEmit": true,
     "baseUrl": ".",
-    "paths": { "@/*": ["./src/*"] },
-    "types": ["vite/client", "youtube", "node"]
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "types": ["vite/client", "youtube", "node", "chrome"]
   },
-  "include": ["src", "server", "tests", "vite.config.ts"]
+  "include": ["src", "server", "tests", "vite.config.ts", "extension/src"]
 }

@@ -5,7 +5,8 @@ import fastifyStatic from "@fastify/static";
 import { Server } from "socket.io";
 import { randomUUID, createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import identity from "../extension/identity.json";
 import { z } from "zod";
 import {
   commandSchema,
@@ -72,10 +73,19 @@ const allowedOrigins = new Set(
     .split(",")
     .map((s) => s.trim()),
 );
+const extensionOrigin = `chrome-extension://${identity.id}`;
+allowedOrigins.add(extensionOrigin);
 function validOrigin(origin: string | undefined) {
   return !!origin && allowedOrigins.has(origin);
 }
 app.addHook("onSend", async (_req, reply) => {
+  if (_req.headers.origin === extensionOrigin) {
+    reply
+      .header("Access-Control-Allow-Origin", extensionOrigin)
+      .header("Vary", "Origin")
+      .header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+      .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  }
   reply
     .header("X-Content-Type-Options", "nosniff")
     .header("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -100,6 +110,56 @@ app.addHook("onRequest", async (req, reply) => {
   )
     return reply.code(403).send({ error: "Недопустимый источник запроса." });
 });
+app.options("/api/extension/*", async (req, reply) =>
+  validOrigin(req.headers.origin)
+    ? reply.code(204).send()
+    : reply.code(403).send(),
+);
+app.get("/api/extension/latest", async (_req, reply) => {
+  const path = resolve("dist/extension/latest.json");
+  if (!existsSync(path))
+    return reply.code(503).send({ error: "Сборка расширения ещё не готова." });
+  return JSON.parse(readFileSync(path, "utf8"));
+});
+app.get("/extension", async (_req, reply) =>
+  reply.sendFile("extension/index.html"),
+);
+app.post(
+  "/api/extension/login",
+  { config: { rateLimit: { max: 8, timeWindow: 60000 } } },
+  async (req, reply) => {
+    if (req.headers.origin !== extensionOrigin)
+      return reply
+        .code(403)
+        .send({ error: "Откройте официальное расширение tvissn." });
+    const parsed = z
+      .object({
+        name: z
+          .string()
+          .trim()
+          .min(1)
+          .max(32)
+          .refine((s) => !/[\p{C}]/u.test(s)),
+        code: z.string().min(1).max(128),
+      })
+      .safeParse(req.body);
+    if (!parsed.success)
+      return reply.code(400).send({ error: "Укажите имя и код приглашения." });
+    if (
+      !safeEqual(
+        createHash("sha256").update(parsed.data.code.trim()).digest("hex"),
+        inviteHash,
+      )
+    )
+      return reply.code(401).send({ error: "Неверный код приглашения." });
+    const session: Session = {
+      id: randomUUID(),
+      name: parsed.data.name,
+      exp: Date.now() + 7 * 86400000,
+    };
+    return { ...session, token: signSession(session, secret + ":extension") };
+  },
+);
 const sessions = new Map<string, Session>();
 function getSession(req: { cookies: Record<string, string | undefined> }) {
   return readSession(req.cookies.tvissn_session, secret);
@@ -136,11 +196,9 @@ app.post(
         inviteHash,
       )
     )
-      return reply
-        .code(401)
-        .send({
-          error: "Неверный код приглашения. Проверьте его и попробуйте снова.",
-        });
+      return reply.code(401).send({
+        error: "Неверный код приглашения. Проверьте его и попробуйте снова.",
+      });
     const session: Session = {
       id: randomUUID(),
       name: parsed.data.name,
@@ -177,7 +235,11 @@ io.use((socket, next) => {
   const token = app.parseCookie(
     socket.request.headers.cookie || "",
   ).tvissn_session;
-  const s = readSession(token, secret);
+  const s =
+    socket.handshake.headers.origin === extensionOrigin &&
+    typeof socket.handshake.auth.token === "string"
+      ? readSession(socket.handshake.auth.token, secret + ":extension")
+      : readSession(token, secret);
   if (!s) return next(new Error("SESSION_EXPIRED"));
   if (io.engine.clientsCount > 50) return next(new Error("Комната заполнена."));
   socket.data.session = s;
@@ -211,7 +273,7 @@ io.on("connection", (socket) => {
   participants.set(socket.id, {
     id: s.id,
     name: s.name,
-    status: state.videoId ? "connecting" : "ready",
+    status: state.videoId || state.externalUrl ? "connecting" : "ready",
   });
   publish();
   let count = 0,

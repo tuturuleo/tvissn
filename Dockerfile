@@ -12,6 +12,7 @@ COPY --from=build --chown=node:node /srv/node_modules ./node_modules
 COPY --from=build --chown=node:node /srv/package.json ./package.json
 COPY --from=build --chown=node:node /srv/dist ./dist
 COPY --from=build --chown=node:node /srv/server ./server
+COPY --from=build --chown=node:node /srv/extension/identity.json ./extension/identity.json
 COPY --from=build --chown=node:node /srv/migrations ./migrations
 USER node
 EXPOSE 10000

@@ -7,6 +7,7 @@ import { resolve, join } from "node:path";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
 import { io, type Socket } from "socket.io-client";
+import identity from "../extension/identity.json";
 import type { Snapshot } from "../server/protocol";
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -190,6 +191,68 @@ test(
       });
       await wait(80);
       assert.equal(rejoined.connected, false);
+      const extensionOrigin = `chrome-extension://${identity.id}`;
+      const extensionLogin = await fetch(origin + "/api/extension/login", {
+        method: "POST",
+        headers: {
+          Origin: extensionOrigin,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ name: "Расширение", code }),
+      });
+      assert.equal(extensionLogin.status, 200);
+      assert.equal(
+        extensionLogin.headers.get("access-control-allow-origin"),
+        extensionOrigin,
+      );
+      const extensionSession = (await extensionLogin.json()) as {
+        token: string;
+      };
+      const extensionSocket = io(origin, {
+        transports: ["websocket"],
+        extraHeaders: { Origin: extensionOrigin },
+        auth: { token: extensionSession.token },
+        reconnection: false,
+      });
+      sockets.push(extensionSocket);
+      await new Promise<void>((resolve, reject) => {
+        extensionSocket.once("connect", () => resolve());
+        extensionSocket.once("connect_error", reject);
+      });
+      assert.equal(
+        (
+          await command(extensionSocket, {
+            type: "loadExternal",
+            commandId: randomUUID(),
+            url: "https://example.com/video",
+          })
+        ).ok,
+        true,
+      );
+      const external = await snap(a);
+      assert.equal(external.playback.externalUrl, "https://example.com/video");
+      assert.equal(
+        (
+          await command(a, {
+            type: "play",
+            commandId: randomUUID(),
+            mediaRevision: external.playback.mediaRevision,
+          })
+        ).ok,
+        true,
+      );
+      assert.equal((await snap(extensionSocket)).playback.playing, true);
+      extensionSocket.disconnect();
+      assert.equal(
+        (
+          await command(a, {
+            type: "load",
+            commandId: randomUUID(),
+            url: "https://youtu.be/dQw4w9WgXcQ?t=120",
+          })
+        ).ok,
+        true,
+      );
       a.disconnect();
       await stop();
       await start();
