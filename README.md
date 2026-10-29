@@ -4,7 +4,10 @@
 
 ## Установка
 
-Скачайте ZIP напрямую: https://tvissn.onrender.com/extension/tvissn-extension.zip
+Скачайте ZIP через прокси: https://tvissn-proxy.lissn.workers.dev/extension/tvissn-extension.zip
+Резервный прямой адрес: https://tvissn.onrender.com/extension/tvissn-extension.zip
+
+Расширение автоматически выбирает между Cloudflare-прокси и прямым Render при сетевой ошибке. Оба ведут к одному серверу и комнате; повторный вход не нужен. Для своего сервера резервные адреса не подставляются. Доступность Cloudflare без VPN зависит от сети.
 
 1. Распакуйте архив в постоянную папку.
 2. На `chrome://extensions` включите режим разработчика и выберите «Загрузить распакованное расширение».

@@ -26,6 +26,7 @@ import {
   serverOrigin,
   parseInvitation,
 } from "./shared";
+import { serviceRoutes } from "./routes";
 
 async function request(type: string, data: Record<string, unknown> = {}) {
   const r = await chrome.runtime.sendMessage({ type, ...data });
@@ -100,7 +101,7 @@ function Popup() {
       setError((e as Error).message);
       return;
     }
-    if (!(await chrome.permissions.request({ origins: [origin + "/*"] }))) {
+    if (!(await chrome.permissions.request({ origins: serviceRoutes(origin).map(r => r + "/*") }))) {
       setError("Разрешите доступ к вашему серверу.");
       return;
     }
@@ -201,7 +202,8 @@ function Popup() {
             />
           </label>
           <details className="text-xs text-muted-foreground">
-            <summary className="cursor-pointer">Адрес своего сервера</summary>
+            <summary className="cursor-pointer">Адреса сервиса / свой сервер</summary>
+            <p className="mt-2">Автовыбор: tvissn-proxy.lissn.workers.dev ↔ tvissn.onrender.com</p>
             <Input
               className="mt-2"
               type="url"
@@ -231,6 +233,7 @@ function Popup() {
               <h1 className="font-medium">{state.session.name}</h1>
               <p className="mt-1 text-xs text-muted-foreground">
                 {state.connected ? "В комнате" : "Соединяемся…"}
+                {state.connectionServer && <span className="block mt-1">{state.connectionServer === DEFAULT_SERVER ? "Через прокси" : state.connectionServer === "https://tvissn.onrender.com" ? "Напрямую" : "Свой сервер"}</span>}
               </p>
             </div>
             <Button

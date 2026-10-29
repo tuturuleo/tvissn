@@ -1,4 +1,8 @@
 import { FollowMode } from "./follow";
+import { ServiceRouter } from "./routes";
+const router = new ServiceRouter();
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let connectionServer = "";
 import { io, type Socket } from "socket.io-client";
 import {
   DEFAULT_SERVER,
@@ -99,6 +103,7 @@ function state() {
       ? { id: session.id, name: session.name, server: session.server }
       : null,
     connected,
+    connectionServer,
     enabled,
     targetTab,
     snapshot,
@@ -111,13 +116,28 @@ function state() {
     installedVersion: chrome.runtime.getManifest().version,
   };
 }
+function reconnect(s: Socket) {
+  if (socket !== s || !session) return;
+  router.next(session.server);
+  s.removeAllListeners();
+  s.disconnect();
+  socket = null;
+  connected = false;
+  ping = null;
+  clearInterval(clockTimer);
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => { reconnectTimer = undefined; connect(); }, 1000);
+}
 function connect() {
   if (!session || socket) return;
-  const s = io(session.server, {
+  clearTimeout(reconnectTimer);
+  connectionServer = router.current(session.server);
+  const endpoint = connectionServer;
+  const s = io(endpoint, {
     transports: ["websocket"],
     auth: { token: session.token },
-    reconnection: true,
-    reconnectionDelayMax: 10000,
+    reconnection: false,
+    timeout: 10000,
   });
   socket = s;
   const sample = () => {
@@ -137,6 +157,7 @@ function connect() {
     );
   };
   s.on("connect", () => {
+    if (session) router.prefer(session.server, endpoint);
     connected = true;
     error = "";
     bestRtt = Infinity;
@@ -168,7 +189,9 @@ function connect() {
       error = "Сессия завершена. Войдите снова.";
       session = null;
       void chrome.storage.local.remove("session");
-    }
+      socket = null;
+      clearInterval(clockTimer);
+    } else reconnect(s);
   });
   s.on("connect_error", (e) => {
     connected = false;
@@ -181,7 +204,8 @@ function connect() {
       void chrome.storage.local.remove("session");
       s.disconnect();
       socket = null;
-    }
+      clearInterval(clockTimer);
+    } else reconnect(s);
     updateBadge();
     void deliver();
   });
@@ -276,12 +300,9 @@ async function sendCommand(command: Record<string, unknown>) {
 async function checkUpdate() {
   const server =
     session?.server ||
-    (await chrome.storage.local.get("server")).server ||
+    (await chrome.storage.local.get<{server?: string}>("server")).server ||
     DEFAULT_SERVER;
-  const r = await fetch(server + "/api/extension/latest", {
-    cache: "no-store",
-    signal: AbortSignal.timeout(10000),
-  });
+  const { response: r, server: downloadServer } = await router.fetch(server, "/api/extension/latest");
   if (!r.ok) throw new Error("Не удалось проверить обновления.");
   const data = await r.json();
   if (
@@ -292,14 +313,16 @@ async function checkUpdate() {
   return {
     ...data,
     downloadUrl:
-      server +
+      downloadServer +
       "/extension/tvissn-extension.zip?v=" +
       encodeURIComponent(data.version),
   };
 }
 async function stop() {
+  clearTimeout(reconnectTimer);
   enabled = false;
   follow.configure(false, null);
+  socket?.removeAllListeners();
   socket?.disconnect();
   socket = null;
   connected = false;
@@ -425,10 +448,9 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       if (message.type === "UPDATE") return checkUpdate();
       if (message.type === "INVITE") {
         if (!session) throw new Error("Сначала войдите.");
-        const r = await fetch(session.server + "/api/extension/invite", {
+        const { response: r } = await router.fetch(session.server, "/api/extension/invite", {
           method: "POST",
           headers: { Authorization: "Bearer " + session.token },
-          signal: AbortSignal.timeout(15000),
         });
         const data = await r.json();
         if (!r.ok)
@@ -448,11 +470,10 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       }
       if (message.type === "LOGIN") {
         const server = serverOrigin(message.server || DEFAULT_SERVER);
-        const res = await fetch(server + "/api/extension/login", {
+        const { response: res } = await router.fetch(server, "/api/extension/login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: message.name, code: message.code }),
-          signal: AbortSignal.timeout(20000),
         });
         const data = await res.json();
         if (!res.ok)
@@ -613,6 +634,8 @@ chrome.runtime.onConnect.addListener((port) => {
   });
   port.onDisconnect.addListener(() => {
     if (!enabled) {
+      clearTimeout(reconnectTimer);
+      socket?.removeAllListeners();
       socket?.disconnect();
       socket = null;
       connected = false;
