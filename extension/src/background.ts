@@ -1,5 +1,5 @@
 import { FollowMode } from "./follow";
-import { samePage } from "./shared";
+import { isNewer, samePage } from "./shared";
 import type { Snapshot } from "../../shared/protocol";
 
 let session: {id:string;name:string} | null = null,
@@ -99,7 +99,7 @@ function state() {
       ? { id: session.id, name: session.name }
       : null,
     connected,
-    peer: {phase:peerState.phase,code:peerState.code,coordinator:peerState.coordinator},
+    peer: {phase:peerState.phase,code:peerState.code,invite:peerState.invite,notice:peerState.notice,coordinator:peerState.coordinator,diagnostics:peerState.diagnostics},
     enabled,
     targetTab,
     snapshot,
@@ -161,8 +161,29 @@ async function sendCommand(command: Record<string, unknown>) {
   if(!connected)throw new Error("Нет P2P-соединения с другом.");
   await peerRequest("COMMAND",{command:{...command,commandId:crypto.randomUUID(),...(["load","loadExternal"].includes(String(command.type))?{}:{mediaRevision:snapshot?.playback.mediaRevision})}});
 }
-async function checkUpdate() {
-  return {manual:true,releasesUrl:"https://github.com/tuturuleo/tvissn/releases/latest"};
+const REPOSITORY = "tuturuleo/tvissn";
+const RELEASES_URL = `https://github.com/${REPOSITORY}/releases/latest`;
+type UpdateInfo = {installed:string;latest:string;available:boolean;downloadUrl:string|null;releasesUrl:string;checkedAt:number};
+let updateInfo: UpdateInfo | null = null;
+// The repository is public, so the unauthenticated GitHub API is enough; results are cached to stay under its hourly limit.
+async function checkUpdate(force = false): Promise<UpdateInfo> {
+  if (!force && updateInfo && Date.now() - updateInfo.checkedAt < 30 * 60000) return updateInfo;
+  const r = await fetch(`https://api.github.com/repos/${REPOSITORY}/releases/latest`, { headers: { Accept: "application/vnd.github+json" }, cache: "no-store" });
+  if (!r.ok) throw new Error(r.status === 403 || r.status === 429 ? "GitHub временно ограничил проверки. Попробуйте позже." : `GitHub ответил ${r.status}.`);
+  const release = await r.json();
+  const latest = String(release.tag_name || "").replace(/^extension-v/, "");
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(latest)) throw new Error("Не удалось определить версию последнего выпуска.");
+  const asset = Array.isArray(release.assets) ? release.assets.find((a: any) => a?.name === "tvissn-extension.zip") : null;
+  const url = typeof asset?.browser_download_url === "string" && asset.browser_download_url.startsWith(`https://github.com/${REPOSITORY}/releases/download/`) ? asset.browser_download_url : null;
+  const installed = chrome.runtime.getManifest().version;
+  updateInfo = { installed, latest, available: isNewer(latest, installed), downloadUrl: url, releasesUrl: RELEASES_URL, checkedAt: Date.now() };
+  return updateInfo;
+}
+async function downloadUpdate() {
+  const info = await checkUpdate(true);
+  if (!info.downloadUrl) throw new Error("В последнем выпуске нет архива расширения.");
+  await chrome.downloads.download({ url: info.downloadUrl, filename: `tvissn-extension-${info.latest}.zip`, conflictAction: "uniquify" });
+  return info;
 }
 async function stop() {
   enabled = false;
@@ -289,10 +310,11 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   void init
     .then(async () => {
       if (message.type === "STATE") return state();
-      if (message.type === "UPDATE") return checkUpdate();
+      if (message.type === "UPDATE") return checkUpdate(!!message.force);
+      if (message.type === "DOWNLOAD_UPDATE") return downloadUpdate();
       if (["CREATE","JOIN","ANSWER"].includes(message.type)) {
         if(message.type!=="ANSWER")await stop();
-        const next=await peerRequest(message.type,{name:message.name,code:message.code});
+        const next=await peerRequest(message.type,{name:message.name,code:message.code,server:typeof message.server==="string"?message.server:""});
         acceptPeer(next);if(message.name)await chrome.storage.local.set({peerName:message.name});return state();
       }
       if (message.type === "FOLLOW") {
