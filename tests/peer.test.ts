@@ -94,3 +94,30 @@ test('room codes round-trip, reject foreign servers and keep relay payloads encr
  const sealed=await seal(room.secret,code);assert.ok(!sealed.includes('tvissn')&&sealed.length<3900);
  assert.equal(await unseal(room.secret,sealed),code);assert.equal(await unseal(newRoom('ntfy.sh').secret,sealed),null);
 });
+test('MQTT relay keeps retained invitations, splits frames and delivers live answers',async()=>{
+ const {newRoom,publish,subscribe}=await import('../extension/src/relay');
+ // Fake broker speaking MQTT 3.1.1 framing; every reply is delivered byte by byte to exercise reassembly.
+ const retained=new Map<string,Uint8Array>(),subs=new Set<any>();
+ const frame=(type:number,body:number[]|Uint8Array)=>{const out=[type],b=[...body];let n=b.length;do{let d=n%128;n=Math.floor(n/128);if(n)d|=128;out.push(d);}while(n);return new Uint8Array([...out,...b]);};
+ class FakeSocket{static OPEN=1;readyState=0;binaryType='';onopen:any;onmessage:any;onclose:any;onerror:any;filter='';
+  constructor(public url:string,public proto:string){assert.equal(proto,'mqtt');setTimeout(()=>{this.readyState=1;this.onopen();},0);}
+  deliver(bytes:Uint8Array){for(const b of bytes)this.onmessage({data:new Uint8Array([b]).buffer});}
+  send(p:Uint8Array){const type=p[0]>>4;let i=1;while(p[i]&128)i++;const body=p.slice(i+1);
+   if(type===1)this.deliver(frame(0x20,[0,0]));
+   if(type===8){const len=(body[2]<<8)|body[3];this.filter=new TextDecoder().decode(body.slice(4,4+len)).replace('#','');subs.add(this);this.deliver(frame(0x90,[body[0],body[1],0]));
+    for(const [t,m] of retained)if(t.startsWith(this.filter))this.deliver(m);}
+   if(type===3){const len=(body[0]<<8)|body[1],topic=new TextDecoder().decode(body.slice(2,2+len));const fwd=frame(0x31,[...body.slice(0,2+len),...body.slice(4+len)]);retained.set(topic,fwd);
+    this.deliver(frame(0x40,[body[2+len],body[3+len]]));for(const s of subs)if(topic.startsWith(s.filter))s.deliver(frame(0x30,[...body.slice(0,2+len),...body.slice(4+len)]));}
+   if(type===14)this.close();}
+  close(){if(this.readyState===3)return;this.readyState=3;subs.delete(this);setTimeout(()=>this.onclose?.(),0);}
+ }
+ const original=(globalThis as any).WebSocket;(globalThis as any).WebSocket=FakeSocket;
+ try{
+  const room=newRoom('wss://broker.test/mqtt'),abort=new AbortController(),got:string[]=[];
+  await publish(room,'invitation');
+  const done=new Promise<void>(resolve=>void subscribe(room,abort.signal,t=>{got.push(t);if(got.length===2)resolve();},e=>assert.fail(e.message)));
+  await new Promise(r=>setTimeout(r,20));await publish(room,'answer');await done;abort.abort();
+  assert.deepEqual(got,['invitation','answer']);
+  for(const m of retained.values())assert.ok(!new TextDecoder().decode(m).includes('invitation'));
+ }finally{(globalThis as any).WebSocket=original;}
+});

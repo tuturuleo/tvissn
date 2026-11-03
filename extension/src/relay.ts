@@ -1,14 +1,17 @@
-// Optional automatic exchange of pairing codes through an ntfy-compatible server.
+import { mqttPublish, mqttSubscribe } from "./mqtt";
+// Optional automatic exchange of pairing codes through an ntfy server (https://) or an MQTT broker over WebSocket (wss://).
 // The server only sees a topic hashed from the room secret and AES-GCM ciphertext; the secret never leaves the code.
 export type Room = { secret: string; server: string };
 const ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789";
 const PREFIX = "tvissn-room:";
-export const DEFAULT_SERVER = "https://ntfy.sh";
+export const DEFAULT_SERVER = "wss://broker.emqx.io:8084/mqtt";
+export const SUGGESTED_SERVERS = [DEFAULT_SERVER, "https://ntfy.sh", "https://ntfy.envs.net", "https://ntfy.adminforge.de", "https://ntfy.mzte.de", "https://ntfy.hostux.net"];
+const isMqtt = (server: string) => server.startsWith("wss://");
 export function normalizeServer(input: string): string {
   const text = input.trim();
   let url: URL;
   try { url = new URL(text.includes("://") ? text : "https://" + text); } catch { throw new Error("Некорректный адрес сервера обмена."); }
-  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) throw new Error("Сервер обмена должен быть адресом https:// без параметров.");
+  if ((url.protocol !== "https:" && url.protocol !== "wss:") || url.username || url.password || url.search || url.hash) throw new Error("Сервер обмена должен быть адресом https:// (ntfy) или wss:// (MQTT) без параметров.");
   return (url.origin + url.pathname).replace(/\/+$/, "");
 }
 export function newRoom(server: string): Room {
@@ -60,17 +63,26 @@ export async function unseal(secret: string, text: string): Promise<string | nul
 export async function publish(room: Room, text: string) {
   const { topic } = await derive(room.secret);
   const body = await seal(room.secret, text);
+  if (isMqtt(room.server)) {
+    // Each message gets its own retained subtopic, so the answer does not replace the stored invitation.
+    const id = [...crypto.getRandomValues(new Uint8Array(6))].map(b => b.toString(16).padStart(2, "0")).join("");
+    return mqttPublish(room.server, `tvissn/${topic}/${id}`, body);
+  }
   // ntfy turns bodies over 4 KB into attachments, which the subscriber would have to fetch separately.
   if (body.length > 3900) throw new Error("Код слишком большой для сервера обмена.");
   const r = await fetch(`${room.server}/${topic}`, { method: "POST", body, cache: "no-store" });
   if (!r.ok) throw new Error(`Сервер обмена ответил ${r.status}.`);
 }
-// Streams the topic (cached history first, then live) until aborted, reconnecting after network errors.
+// Streams the topic (stored history first, then live) until aborted, reconnecting after network errors.
 export async function subscribe(room: Room, signal: AbortSignal, onText: (text: string) => void, onError: (e: Error) => void) {
   const { topic } = await derive(room.secret);
   let cursor = "all";
   while (!signal.aborted) {
     try {
+      if (isMqtt(room.server)) {
+        await mqttSubscribe(room.server, `tvissn/${topic}/#`, signal, m => void unseal(room.secret, m).then(t => { if (t && !signal.aborted) onText(t); }));
+        continue;
+      }
       const r = await fetch(`${room.server}/${topic}/json?since=${encodeURIComponent(cursor)}`, { signal, cache: "no-store" });
       if (!r.ok || !r.body) throw new Error(`Сервер обмена ответил ${r.status}.`);
       const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();

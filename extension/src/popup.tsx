@@ -2,7 +2,7 @@ import { createRoot } from "react-dom/client";
 import { useEffect, useState } from "react";
 import { Button } from "../../src/components/ui/button";
 import { Input } from "../../src/components/ui/input";
-import { DEFAULT_SERVER } from "./relay";
+import { DEFAULT_SERVER, SUGGESTED_SERVERS } from "./relay";
 import { Copy, Check, Link2, RefreshCw, Download, LogOut, Settings, Users, Play, Pause, ExternalLink } from "lucide-react";
 async function request(type:string,data:Record<string,unknown>={}) {
  const r=await chrome.runtime.sendMessage({type,...data});if(!r?.ok)throw new Error(r?.error||"Расширение не ответило.");return r.result;
@@ -52,7 +52,7 @@ function Popup(){
  </>}
  {state&&!state.connected&&<details className="rounded-lg border border-border p-3 text-xs"><summary className="flex cursor-pointer items-center gap-2"><Settings size={14}/>Настройки</summary><div className="mt-3 space-y-3">
  <label className="flex gap-2"><input type="checkbox" checked={settings.relay} onChange={e=>configure({relay:e.target.checked})}/>Обмен кодами через сервер</label>
- {settings.relay&&<label className="block">Сервер обмена (ntfy)<Input value={settings.server} onChange={e=>configure({server:e.target.value})} onBlur={()=>{if(!settings.server.trim())configure({server:DEFAULT_SERVER});}} className="mt-1"/><span className="mt-1 block text-muted-foreground">Сервер видит только зашифрованные коды. Подходит ntfy.sh или свой ntfy.</span></label>}
+ {settings.relay&&<label className="block">Сервер обмена<Input list="relay-servers" value={settings.server} onChange={e=>configure({server:e.target.value})} onBlur={()=>{if(!settings.server.trim())configure({server:DEFAULT_SERVER});}} className="mt-1"/><datalist id="relay-servers">{SUGGESTED_SERVERS.map(s=><option key={s} value={s}/>)}</datalist><span className="mt-1 block text-muted-foreground">MQTT-брокер (wss://) или ntfy (https://). Сервер видит только зашифрованные коды. Адрес передаётся другу в коде комнаты.</span></label>}
  <label className="flex gap-2"><input type="checkbox" checked={settings.debug} onChange={e=>configure({debug:e.target.checked})}/>Режим отладки (диагностика P2P)</label>
  </div></details>}
  {state&&!state.connected&&phase!=="idle"&&<Button variant="ghost" className="w-full" onClick={()=>act(()=>request("LOGOUT"))}>Отменить подключение</Button>}
