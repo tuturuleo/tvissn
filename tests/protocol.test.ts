@@ -6,8 +6,8 @@ import {
   positionAt,
   commandSchema,
   type Playback,
-} from "../server/protocol";
-import { signSession, readSession } from "../server/auth";
+} from "../shared/protocol";
+
 const initial: Playback = {
   videoId: null,
   position: 0,
@@ -143,16 +143,5 @@ test("reject invalid command values", () => {
       rate: 1.01,
     }).success,
     false,
-  );
-});
-test("session signatures, expiration and revocation by secret rotation", () => {
-  const s = { id: "session-1", name: "Друг", exp: Date.now() + 10000 };
-  const token = signSession(s, "test-secret");
-  assert.deepEqual(readSession(token, "test-secret"), s);
-  assert.equal(readSession(token + "x", "test-secret"), null);
-  assert.equal(readSession(token, "rotated"), null);
-  assert.equal(
-    readSession(signSession({ ...s, exp: 0 }, "test-secret"), "test-secret"),
-    null,
   );
 });

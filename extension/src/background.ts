@@ -1,19 +1,8 @@
 import { FollowMode } from "./follow";
-import { ServiceRouter } from "./routes";
-const router = new ServiceRouter();
-let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-let connectionServer = "";
-import { io, type Socket } from "socket.io-client";
-import {
-  DEFAULT_SERVER,
-  serverOrigin,
-  samePage,
-  type ExtensionSession,
-} from "./shared";
-import type { Snapshot } from "../../server/protocol";
+import { samePage } from "./shared";
+import type { Snapshot } from "../../shared/protocol";
 
-let session: ExtensionSession | null = null,
-  socket: Socket | null = null,
+let session: {id:string;name:string} | null = null,
   snapshot: Snapshot | null = null;
 let targetTab: number | null = null,
   selectedPlayer: string | null = null,
@@ -21,7 +10,6 @@ let targetTab: number | null = null,
   connected = false,
   error = "",
   clockOffset = 0,
-  bestRtt = Infinity,
   ping: number | null = null;
 let candidates = new Map<
   string,
@@ -36,7 +24,24 @@ let candidates = new Map<
     seenAt: number;
   }
 >();
-let clockTimer: ReturnType<typeof setInterval> | undefined;
+let peerState: any = {phase:"idle",connected:false,code:""};
+let creating: Promise<void> | undefined;
+async function ensurePeer() {
+  if(await chrome.offscreen.hasDocument()) return;
+  if(!creating) creating=chrome.offscreen.createDocument({url:"offscreen.html",reasons:[chrome.offscreen.Reason.WEB_RTC],justification:"Keep a direct WebRTC data connection alive while popup is closed and tabs navigate."}).finally(()=>{creating=undefined;});
+  await creating;
+}
+async function peerRequest(type:string,data:Record<string,unknown>={}) {
+  await ensurePeer();
+  const r=await chrome.runtime.sendMessage({target:"peer",type,...data});
+  if(!r?.ok)throw new Error(r?.error||"Фоновое P2P-соединение не ответило.");
+  return r.result;
+}
+function acceptPeer(next:any) {
+  peerState=next;session=next.person?{id:next.person.id,name:next.person.name}:null;
+  connected=!!next.connected;snapshot=next.snapshot;ping=next.ping;clockOffset=next.clockOffset||0;error=next.error||"";
+  updateBadge();if(connected&&enabled&&snapshot)void follow.update(snapshot.playback.externalUrl,snapshot.playback.mediaRevision);void deliver();
+}
 let widgetPrefs: Record<string, unknown> = {};
 const follow = new FollowMode({
   hasPermission: (origin) =>
@@ -72,22 +77,13 @@ async function saveWatch() {
   });
 }
 const init = (async () => {
-  await chrome.storage.local.setAccessLevel({
-    accessLevel: "TRUSTED_CONTEXTS",
-  });
-  const stored = await chrome.storage.local.get<{
-    session?: ExtensionSession;
-    watch?: { tabId: number | null; enabled: boolean; autoFollow?: boolean };
-    widgetPrefs?: Record<string, unknown>;
-  }>(["session", "watch", "widgetPrefs"]);
-  widgetPrefs = stored.widgetPrefs || {};
-  session = stored.session || null;
-  if (stored.watch) {
-    targetTab = stored.watch.tabId;
-    enabled = stored.watch.enabled;
-    follow.configure(!!stored.watch.autoFollow, targetTab);
-  }
-  if (enabled && session) await restore();
+  await chrome.storage.local.setAccessLevel({accessLevel:"TRUSTED_CONTEXTS"});
+  const stored=await chrome.storage.local.get<{watch?:{tabId:number|null;enabled:boolean;autoFollow?:boolean};widgetPrefs?:Record<string,unknown>}>(["watch","widgetPrefs"]);
+  widgetPrefs=stored.widgetPrefs||{};
+  if(stored.watch){targetTab=stored.watch.tabId;enabled=!!stored.watch.enabled;follow.configure(!!stored.watch.autoFollow,targetTab);}
+  await chrome.storage.local.remove(["session","server"]);
+  acceptPeer(await peerRequest("STATE"));
+  if(targetTab!==null){try{await chrome.tabs.get(targetTab);if(enabled)await inject(targetTab);}catch{targetTab=null;enabled=false;}}
 })();
 function updateBadge() {
   void chrome.action.setBadgeText({
@@ -100,10 +96,10 @@ function updateBadge() {
 function state() {
   return {
     session: session
-      ? { id: session.id, name: session.name, server: session.server }
+      ? { id: session.id, name: session.name }
       : null,
     connected,
-    connectionServer,
+    peer: {phase:peerState.phase,code:peerState.code,coordinator:peerState.coordinator},
     enabled,
     targetTab,
     snapshot,
@@ -115,121 +111,6 @@ function state() {
     pendingNavigation: follow.pendingGrant,
     installedVersion: chrome.runtime.getManifest().version,
   };
-}
-function reconnect(s: Socket) {
-  if (socket !== s || !session) return;
-  router.next(session.server);
-  s.removeAllListeners();
-  s.disconnect();
-  socket = null;
-  connected = false;
-  ping = null;
-  clearInterval(clockTimer);
-  clearTimeout(reconnectTimer);
-  reconnectTimer = setTimeout(() => { reconnectTimer = undefined; connect(); }, 1000);
-}
-function connect() {
-  if (!session || socket) return;
-  clearTimeout(reconnectTimer);
-  connectionServer = router.current(session.server);
-  const endpoint = connectionServer;
-  const s = io(endpoint, {
-    transports: ["websocket"],
-    auth: { token: session.token },
-    reconnection: false,
-    timeout: 10000,
-  });
-  socket = s;
-  const sample = () => {
-    const start = Date.now();
-    s.timeout(5000).emit(
-      "clock",
-      {},
-      (e: Error | null, r: { serverTime: number }) => {
-        if (e || !r) return;
-        const rtt = Date.now() - start;
-        ping = rtt;
-        if (rtt < bestRtt + 20) {
-          bestRtt = Math.min(rtt, bestRtt);
-          clockOffset = r.serverTime - (start + rtt / 2);
-        }
-      },
-    );
-  };
-  s.on("connect", () => {
-    if (session) router.prefer(session.server, endpoint);
-    connected = true;
-    error = "";
-    bestRtt = Infinity;
-    sample();
-    s.emit("sync");
-    updateBadge();
-  });
-  s.on("snapshot", (next: Snapshot) => {
-    if (
-      snapshot &&
-      snapshot.epoch === next.epoch &&
-      snapshot.playback.revision > next.playback.revision
-    )
-      return;
-    snapshot = next;
-    if (enabled)
-      void follow.update(
-        next.playback.externalUrl,
-        next.playback.mediaRevision,
-      );
-    void deliver();
-  });
-  s.on("disconnect", (reason) => {
-    connected = false;
-    ping = null;
-    updateBadge();
-    void deliver();
-    if (reason === "io server disconnect") {
-      error = "Сессия завершена. Войдите снова.";
-      session = null;
-      void chrome.storage.local.remove("session");
-      socket = null;
-      clearInterval(clockTimer);
-    } else reconnect(s);
-  });
-  s.on("connect_error", (e) => {
-    connected = false;
-    error =
-      e.message === "SESSION_EXPIRED"
-        ? "Сессия истекла. Войдите снова."
-        : "Не удалось соединиться с сервисом. Повторяем подключение…";
-    if (e.message === "SESSION_EXPIRED") {
-      session = null;
-      void chrome.storage.local.remove("session");
-      s.disconnect();
-      socket = null;
-      clearInterval(clockTimer);
-    } else reconnect(s);
-    updateBadge();
-    void deliver();
-  });
-  clockTimer = setInterval(sample, 20000);
-}
-async function restore() {
-  if (!session || session.exp < Date.now()) {
-    session = null;
-    enabled = false;
-    await chrome.storage.local.remove("session");
-    return;
-  }
-  if (targetTab !== null) {
-    try {
-      await chrome.tabs.get(targetTab);
-    } catch {
-      targetTab = null;
-      enabled = false;
-    }
-  }
-  if (enabled) {
-    connect();
-    if (targetTab !== null) await inject(targetTab);
-  }
 }
 async function inject(tabId: number) {
   try {
@@ -277,57 +158,15 @@ async function deliver() {
       .catch(() => {});
 }
 async function sendCommand(command: Record<string, unknown>) {
-  if (!socket?.connected) throw new Error("Нет соединения с комнатой.");
-  return new Promise<void>((resolve, reject) =>
-    socket!.timeout(10000).emit(
-      "command",
-      {
-        ...command,
-        commandId: crypto.randomUUID(),
-        ...(["load", "loadExternal"].includes(String(command.type))
-          ? {}
-          : { mediaRevision: snapshot?.playback.mediaRevision }),
-      },
-      (e: Error | null, result: { ok: boolean; error?: string }) => {
-        if (e) reject(new Error("Нет подтверждения от сервера."));
-        else if (!result?.ok)
-          reject(new Error(result?.error || "Действие отклонено."));
-        else resolve();
-      },
-    ),
-  );
+  if(!connected)throw new Error("Нет P2P-соединения с другом.");
+  await peerRequest("COMMAND",{command:{...command,commandId:crypto.randomUUID(),...(["load","loadExternal"].includes(String(command.type))?{}:{mediaRevision:snapshot?.playback.mediaRevision})}});
 }
 async function checkUpdate() {
-  const server =
-    session?.server ||
-    (await chrome.storage.local.get<{server?: string}>("server")).server ||
-    DEFAULT_SERVER;
-  const { response: r, server: downloadServer } = await router.fetch(server, "/api/extension/latest");
-  if (!r.ok) throw new Error("Не удалось проверить обновления.");
-  const data = await r.json();
-  if (
-    !/^\d+\.\d+\.\d+(?:\.\d+)?$/.test(data.version) ||
-    data.extensionId !== chrome.runtime.id
-  )
-    throw new Error("Сервис вернул несовместимое обновление.");
-  return {
-    ...data,
-    downloadUrl:
-      downloadServer +
-      "/extension/tvissn-extension.zip?v=" +
-      encodeURIComponent(data.version),
-  };
+  return {manual:true,releasesUrl:"https://github.com/tuturuleo/tvissn/releases/latest"};
 }
 async function stop() {
-  clearTimeout(reconnectTimer);
   enabled = false;
   follow.configure(false, null);
-  socket?.removeAllListeners();
-  socket?.disconnect();
-  socket = null;
-  connected = false;
-  ping = null;
-  clearInterval(clockTimer);
   if (targetTab !== null)
     for (const c of candidates.values())
       void chrome.tabs
@@ -341,6 +180,11 @@ async function stop() {
 }
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== chrome.runtime.id) return;
+  if(message.target==="peer")return;
+  if(message.type==="PEER_EVENT"){
+    if(sender.url===chrome.runtime.getURL("offscreen.html"))acceptPeer(message.state);
+    return;
+  }
   if (sender.tab) {
     if (!enabled || sender.tab.id !== targetTab) return;
     if (
@@ -434,7 +278,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       return;
     }
     if (message.type === "TVISSN_STATUS") {
-      socket?.emit("status", message.status);
+      void peerRequest("STATUS", {status:message.status}).catch(()=>{});
       reply({ ok: true });
       return;
     }
@@ -446,19 +290,10 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     .then(async () => {
       if (message.type === "STATE") return state();
       if (message.type === "UPDATE") return checkUpdate();
-      if (message.type === "INVITE") {
-        if (!session) throw new Error("Сначала войдите.");
-        const { response: r } = await router.fetch(session.server, "/api/extension/invite", {
-          method: "POST",
-          headers: { Authorization: "Bearer " + session.token },
-        });
-        const data = await r.json();
-        if (!r.ok)
-          throw new Error(data.error || "Не удалось создать приглашение.");
-        const url = new URL("tvissn://join");
-        url.searchParams.set("server", session.server);
-        url.searchParams.set("invite", data.code);
-        return { invitation: url.toString(), expiresAt: data.expiresAt };
+      if (["CREATE","JOIN","ANSWER"].includes(message.type)) {
+        if(message.type!=="ANSWER")await stop();
+        const next=await peerRequest(message.type,{name:message.name,code:message.code});
+        acceptPeer(next);if(message.name)await chrome.storage.local.set({peerName:message.name});return state();
       }
       if (message.type === "FOLLOW") {
         setFollow(!!message.enabled);
@@ -468,39 +303,12 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         await follow.retry();
         return state();
       }
-      if (message.type === "LOGIN") {
-        const server = serverOrigin(message.server || DEFAULT_SERVER);
-        const { response: res } = await router.fetch(server, "/api/extension/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: message.name, code: message.code }),
-        });
-        const data = await res.json();
-        if (!res.ok)
-          throw new Error(
-            res.status === 429
-              ? "Слишком много попыток. Подождите минуту."
-              : data.error || "Не удалось войти.",
-          );
-        await stop();
-        session = {
-          server,
-          token: data.token,
-          name: data.name,
-          id: data.id,
-          exp: data.exp,
-        };
-        await chrome.storage.local.set({ session, server });
-        connect();
-        return state();
-      }
       if (message.type === "ATTACH") {
-        if (!session) throw new Error("Сначала войдите по коду.");
+        if (!session || !connected) throw new Error("Сначала подключите друга по P2P.");
         const tab = await chrome.tabs.get(message.tabId);
         if (
           !tab.url ||
-          !/^https?:/.test(tab.url) ||
-          tab.url.startsWith(session.server)
+          !/^https?:/.test(tab.url)
         )
           throw new Error("Откройте вкладку внешнего сайта с видео.");
         if (targetTab !== null && targetTab !== tab.id)
@@ -518,7 +326,6 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         candidates.clear();
         follow.configure(follow.enabled, targetTab);
         await saveWatch();
-        connect();
         if (!connected)
           throw new Error(
             "Соединяемся с комнатой. Нажмите подключение ещё раз через несколько секунд.",
@@ -552,8 +359,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       }
       if (message.type === "LOGOUT") {
         await stop();
-        session = null;
-        await chrome.storage.local.remove("session");
+        acceptPeer(await peerRequest("CLOSE"));
         return state();
       }
       if (message.type === "IFRAMES") {
@@ -622,24 +428,4 @@ chrome.runtime.onStartup.addListener(() => {
 });
 chrome.runtime.onInstalled.addListener(() => {
   void init;
-});
-chrome.runtime.onConnect.addListener((port) => {
-  if (
-    port.name !== "popup" ||
-    (port.sender?.url && !port.sender.url.startsWith(chrome.runtime.getURL("")))
-  )
-    return;
-  void init.then(() => {
-    if (session) connect();
-  });
-  port.onDisconnect.addListener(() => {
-    if (!enabled) {
-      clearTimeout(reconnectTimer);
-      socket?.removeAllListeners();
-      socket?.disconnect();
-      socket = null;
-      connected = false;
-      clearInterval(clockTimer);
-    }
-  });
 });

@@ -31,8 +31,7 @@ const manifest = {
   version: release.version,
   minimum_chrome_version: "116",
   key: identity.key,
-  permissions: ["storage", "activeTab", "scripting", "clipboardWrite"],
-  host_permissions: [identity.defaultServer, ...(identity.fallbackServers || [])].map(origin => origin + "/*"),
+  permissions: ["storage", "activeTab", "scripting", "clipboardWrite", "offscreen"],
   optional_host_permissions: ["https://*/*", "http://*/*"],
   action: { default_title: "tvissn", default_popup: "popup.html" },
   background: { service_worker: "background.js", type: "module" },
@@ -52,6 +51,8 @@ await build({
   target: "chrome116",
   minify: true,
 });
+await build({entryPoints:["extension/src/offscreen.ts"],outfile:out+"/offscreen.js",bundle:true,format:"iife",target:"chrome116",minify:true});
+await writeFile(out+"/offscreen.html",'<!doctype html><html><head><meta charset="utf-8"><title>P2P connection</title></head><body><script src="offscreen.js"></script></body></html>');
 await build({
   entryPoints: ["extension/src/content.ts"],
   outfile: out + "/content.js",

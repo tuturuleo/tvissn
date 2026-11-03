@@ -1,6 +1,6 @@
 import { createWidget, type WidgetPreferences } from "./widget";
-import type { Playback, Snapshot } from "../../server/protocol";
-import { positionAt } from "../../server/timeline";
+import type { Playback, Snapshot } from "../../shared/protocol";
+import { positionAt } from "../../shared/timeline";
 
 // Idempotent injection: attaching a second time reuses the same observer and media listeners.
 const guard = "__tvissnContentV1" as const;

@@ -7,8 +7,7 @@ on:
       - "!extension/release.json"
       - "scripts/build-extension.mjs"
       - "scripts/prepare-extension-release.mjs"
-      - "server/protocol.ts"
-      - "server/timeline.ts"
+      - "shared/**"
       - "src/components/ui/**"
       - "src/index.css"
       - "package.json"
@@ -39,7 +38,7 @@ jobs:
         run: echo "value=$(node scripts/prepare-extension-release.mjs)" >> "$GITHUB_OUTPUT"
       - run: npm test
       - run: npm run build
-      - name: Publish version metadata for the website deployment
+      - name: Publish extension version metadata
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'

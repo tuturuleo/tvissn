@@ -1,8 +1,4 @@
 {
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA48Eqy51QMPoHdN6Gkq4DeQw7BD4zNoAg2LJOpAs5pGKeBw6r36LKJGaluxWnzyZNv5M6JKOFP8x1greoxtofC7eZMa2ToY1j+cT4Da1I57Ld05it1XhJ13MRle+i81C2C4wAAYbbCjxDknYkTOHt+kI9hvJf3vXt59XIv8o51TkH6y+cHAiCIoFGSGzwJpxmTWBqhei5xxpOlOvx5fgIRvOZGPMv5TEjfvVAc1MSmtiinxdiGlsSuXP5EqHMeaElhn3ggoE0RZFa2XE37YH1fwipsEGjsn7/JaCWI1RbGyQnDtx33MrjbRH99+eKrBL8gqe/6+7JecK+Oa9AQMvxjwIDAQAB",
-  "id": "fkohpgglbodngaicfehkgdojlbgpbijo",
-  "defaultServer": "https://tvissn-proxy.lissn.workers.dev",
-  "fallbackServers": [
-    "https://tvissn.onrender.com"
-  ]
+  "id": "fkohpgglbodngaicfehkgdojlbgpbijo"
 }
