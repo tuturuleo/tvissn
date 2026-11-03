@@ -20,6 +20,27 @@
 
 Проверка доступности ntfy.sh: страница https://ntfy.sh/v1/health должна показать `{"healthy":true}`.
 
+### Свой сервер обмена на Windows
+
+В [relay-server/windows](relay-server/windows) лежит скрипт, который поднимает ntfy за HTTPS-прокси Caddy как службы Windows. Скачайте оба файла в одну папку и дважды щёлкните `tvissn-relay.cmd` — откроется меню (права администратора запросятся сами). То же из командной строки:
+
+```
+tvissn-relay.cmd install                       # белый IP определится сам, адрес https://1-2-3-4.nip.io
+tvissn-relay.cmd install -Dns sslip            # https://1-2-3-4.sslip.io
+tvissn-relay.cmd install -Dns duckdns -DuckDnsDomain имя -DuckDnsToken токен
+tvissn-relay.cmd install -Dns custom -Domain relay.example.com
+tvissn-relay.cmd install -PublicIp 1.2.3.4 -Manual -Upnp
+tvissn-relay.cmd status | start | stop | enable | disable | check | logs | update | uninstall
+```
+
+- `install` скачивает ntfy и Caddy с GitHub с проверкой контрольных сумм, пишет конфигурацию, регистрирует службы `tvissn-ntfy` и `tvissn-caddy`, правило брандмауэра для 80/443 и ждёт сертификат. Повторный `install` меняет настройки, остальное сохраняется.
+- `enable` — автозапуск вместе с Windows, `disable` — остановить и не запускать, `start`/`stop` — разово.
+- `check` — диагностика без установки: белый ли IP, нет ли CGNAT, разрешаются ли nip.io/sslip.io, свободны ли порты.
+- Задача планировщика каждые 10 минут проверяет внешний IP: обновляет DuckDNS или переводит адрес nip.io/sslip.io на новый IP. Код комнаты содержит адрес на момент создания, поэтому смена IP между подключениями ничего не ломает.
+- Сервер по умолчанию обслуживает только топики расширения (`tvissn_*`); `-OpenTopics` снимает ограничение.
+
+Нужны белый IP (не CGNAT) и проброс TCP 80 и 443 на роутере на этот компьютер (или `-Upnp`). nip.io и sslip.io не входят в Public Suffix List, поэтому лимит Let's Encrypt для них общий у всех пользователей; если он исчерпан, Caddy сам выпустит сертификат через ZeroSSL. DuckDNS такой проблемы не имеет. Друг проверяет доступность адресом `https://<адрес>/v1/health`.
+
 ### Режим отладки
 
 В «Настройках» включается «Режим отладки»: popup показывает диагностику P2P (тип NAT, время сбора кандидатов, время до сбоя ICE, ошибки STUN, состояние сервера обмена) и кнопку её копирования. Если NAT симметричный, предупреждение показывается и без отладки.
