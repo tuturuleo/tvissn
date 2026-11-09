@@ -85,6 +85,23 @@ test('two offscreen peers exchange codes, commands and snapshots independently o
   for(const t of topics.values())for(const l of t.list)assert.ok(!l.includes('tvissn-p2p')&&!l.includes('Alice'));
  }finally{for(const timer of timers)clearInterval(timer);await a.rpc('CLOSE');await b.rpc('CLOSE');}
 });
+test('CREATE with an invalid exchange server fails before any offer or RTCPeerConnection exists',async()=>{
+ let made=0;
+ class PC {constructor(){made++;}}
+ const bundle=(await build({entryPoints:['extension/src/offscreen.ts'],bundle:true,format:'iife',write:false,platform:'browser'})).outputFiles[0].text;
+ const timers:any[]=[];let listener:any;
+ const chrome={runtime:{id:'test',getURL:(p:string)=>'chrome-extension://test/'+p,onMessage:{addListener:(fn:any)=>{listener=fn;}},sendMessage:async()=>{}}};
+ runInNewContext(bundle,{chrome,RTCPeerConnection:PC,crypto,TextEncoder,TextDecoder,TextDecoderStream,ReadableStream,Response,Blob,CompressionStream,DecompressionStream,AbortController,queueMicrotask,fetch:async()=>{throw new Error('no network');},btoa,atob,URL,console,setTimeout,clearTimeout,setInterval:(fn:any,ms:number)=>{const t=setInterval(fn,ms);timers.push(t);return t;},clearInterval});
+ const rpc=(type:string,data:any={})=>new Promise<any>(resolve=>listener({target:'peer',type,...data},{id:'test',url:'chrome-extension://test/background.js'},resolve));
+ try{
+  for(const server of ['http://ntfy.sh','http://bad']){
+   const r=await rpc('CREATE',{name:'Alice',server});
+   assert.equal(r.ok,false);assert.match(r.error,/https:\/\/.*wss:\/\//);
+   const s=(await rpc('STATE')).result;
+   assert.equal(s.phase,'idle');assert.equal(s.code,'');assert.equal(s.invite,'');assert.equal(made,0);
+  }
+ }finally{for(const timer of timers)clearInterval(timer);}
+});
 test('room codes round-trip, reject foreign servers and keep relay payloads encrypted',async()=>{
  const {newRoom,encodeRoom,decodeRoom,seal,unseal,normalizeServer}=await import('../extension/src/relay');
  const room=newRoom('ntfy.sh/');assert.equal(room.server,'https://ntfy.sh');
