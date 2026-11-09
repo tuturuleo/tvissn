@@ -1,6 +1,7 @@
 import { decodePairing, encodePairing } from "./pairing";
 import { LocalRoom, participantSchema, wireSchema } from "./room";
 import { decodeRoom, encodeRoom, isRoomCode, newRoom, publish as relayPublish, subscribe as relaySubscribe, type Room } from "./relay";
+import { judgeNat, type Mapped } from "./nat";
 import type { Participant, Snapshot } from "../../shared/protocol";
 let pc:RTCPeerConnection|null=null, channel:RTCDataChannel|null=null, room:LocalRoom|null=null;
 let peer:Participant|null=null, coordinator=false, pair="", expires=0, deadline=0, code="", error="", notice="", invite="", phase="idle", offset=0, ping:number|null=null, latest:Snapshot|null=null;
@@ -8,17 +9,7 @@ let generation=0, received=Date.now(), hello=false, relayAbort:AbortController|n
 let diagnostics:Record<string,unknown>={},everConnected=false,checkingSince=0;
 // Network facts gathered while connecting; kept separately so a failure snapshot does not erase them.
 let net:{nat?:string,srflx?:string[],stunErrors?:number[],gatherMs?:number,iceFailedAfterMs?:number,relay?:string}={};
-let mapped:{address:string,port:number,server:string}[]=[];
-function judgeNat() {
- if(!mapped.length)return "no-public-address";
- // Chrome drops a server-reflexive candidate equal to an existing one, so two STUN servers reporting
- // different ports for one public address mean the NAT maps per destination (symmetric): direct P2P needs TURN.
- for(const address of new Set(mapped.map(m=>m.address))){
-  const list=mapped.filter(m=>m.address===address),servers=new Set(list.map(m=>m.server));
-  if(servers.size>1&&servers.size===list.length&&new Set(list.map(m=>m.port)).size>1)return "symmetric";
- }
- return "likely-ok";
-}
+let mapped:Mapped[]=[];
 function describe(reason:string) {
  const count=(sdp:string|undefined)=>{const result={host:0,srflx:0,relay:0};for(const line of (sdp||"").split("\n")){const type=line.match(/ typ (host|srflx|relay)(?: |\r|$)/)?.[1] as keyof typeof result|undefined;if(type)result[type]++;}return result;};
  diagnostics={reason,everConnected,role:coordinator?"offer":"answer",connection:pc?.connectionState,ice:pc?.iceConnectionState,gathering:pc?.iceGatheringState,channel:channel?.readyState,local:count(pc?.localDescription?.sdp),remote:count(pc?.remoteDescription?.sdp),...checkingSince?{afterMs:Date.now()-checkingSince}:{}};
@@ -105,7 +96,7 @@ async function start(name:string,offer?:string){
   const c=e.candidate;if(gen!==generation||c?.type!=="srflx"||!c.address||!c.port)return;
   const server=String((c as {url?:string}).url||(e as {url?:string|null}).url||"?").replace(/^stuns?:/,"").replace(/:\d+$/,"");
   mapped.push({address:c.address,port:c.port,server});
-  net.srflx=mapped.map(m=>`${m.server} → :${m.port}`);net.nat=judgeNat();
+  net.srflx=mapped.map(m=>`${m.server} → :${m.port}`);net.nat=judgeNat(mapped);
  };
  try{
   const began=Date.now();
@@ -122,7 +113,7 @@ async function start(name:string,offer?:string){
    const timer=setTimeout(done,5000);
    connection.addEventListener("icegatheringstatechange",change);connection.addEventListener("icecandidate",found);
   });
-  net.gatherMs=Date.now()-began;net.nat=judgeNat();
+  net.gatherMs=Date.now()-began;net.nat=judgeNat(mapped);
   if(gen!==generation)throw new Error("Создание подключения отменено.");
   code=hello?"":encodePairing({v:1,kind:imported?"answer":"offer",pair,expires,sdp:connection.localDescription!.sdp});
   if(!hello)phase=imported?"answer":"offer";notify();return state();
