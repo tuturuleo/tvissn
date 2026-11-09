@@ -94,6 +94,15 @@ test('room codes round-trip, reject foreign servers and keep relay payloads encr
  const sealed=await seal(room.secret,code);assert.ok(!sealed.includes('tvissn')&&sealed.length<3900);
  assert.equal(await unseal(room.secret,sealed),code);assert.equal(await unseal(newRoom('ntfy.sh').secret,sealed),null);
 });
+test('room secrets reject biased bytes and always round-trip',async()=>{
+ const {newRoom,encodeRoom,decodeRoom}=await import('../extension/src/relay');
+ const original=crypto.getRandomValues;let calls=0;
+ try{
+  (crypto as any).getRandomValues=<T extends ArrayBufferView>(a:T):T=>{(a as unknown as Uint8Array).fill(calls++?0:255);return a;};
+  assert.equal(newRoom('ntfy.sh').secret,'AAAA-AAAA-AAAA');assert.ok(calls>=2);
+ }finally{(crypto as any).getRandomValues=original;}
+ for(let i=0;i<1000;i++){const room=newRoom('ntfy.sh');assert.match(room.secret,/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/);assert.deepEqual(decodeRoom(encodeRoom(room)),room);}
+});
 test('MQTT relay keeps retained invitations, splits frames and delivers live answers',async()=>{
  const {newRoom,publish,subscribe}=await import('../extension/src/relay');
  // Fake broker speaking MQTT 3.1.1 framing; every reply is delivered byte by byte to exercise reassembly.

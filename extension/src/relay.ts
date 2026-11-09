@@ -15,8 +15,12 @@ export function normalizeServer(input: string): string {
   return (url.origin + url.pathname).replace(/\/+$/, "");
 }
 export function newRoom(server: string): Room {
-  const bytes = crypto.getRandomValues(new Uint8Array(12));
-  const chars = [...bytes].map(b => ALPHABET[b % ALPHABET.length]).join("");
+  // Rejection sampling: bytes at or above the largest multiple of the alphabet size would skew the distribution.
+  const limit = 256 - 256 % ALPHABET.length;
+  let chars = "";
+  while (chars.length < 12) {
+    for (const b of crypto.getRandomValues(new Uint8Array(16))) if (b < limit && chars.length < 12) chars += ALPHABET[b % ALPHABET.length];
+  }
   return { secret: chars.match(/.{4}/g)!.join("-"), server: normalizeServer(server) };
 }
 export function encodeRoom(room: Room): string { return PREFIX + room.secret + "@" + room.server.replace(/^https:\/\//, ""); }
