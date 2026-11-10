@@ -66,6 +66,7 @@ export class FollowMode {
     try {
       await this.hooks.navigate(this.tabId, url);
     } catch {
+      if (generation !== this.generation) return;
       this.expected = null;
       this.disable(
         "Не удалось выполнить автопереход. Подключите вкладку повторно.",

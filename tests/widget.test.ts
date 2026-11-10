@@ -228,3 +228,107 @@ test("rapid shared-video changes cannot complete a stale permission check or nav
   follow.complete(1, "https://example.com/redirected");
   assert.equal(follow.enabled, false);
 });
+
+function setupFollowNavigation() {
+  const calls: {
+    tab: number;
+    url: string;
+    resolve: () => void;
+    reject: (error: Error) => void;
+  }[] = [];
+  const messages: string[] = [],
+    changes: boolean[] = [];
+  let allowed = true;
+  const follow = new FollowMode({
+    hasPermission: async () => allowed,
+    navigate: (tab, url) =>
+      new Promise<void>((resolve, reject) => {
+        calls.push({ tab, url, resolve, reject });
+      }),
+    notify: (message) => messages.push(message),
+    changed: () => changes.push(follow.enabled),
+  });
+  return {
+    follow, calls, messages, changes,
+    denyPermission: () => { allowed = false; },
+  };
+}
+
+for (const reconfigure of [false, true]) {
+  test(`stale navigation rejection preserves the new transition after ${reconfigure ? "configure" : "update"}`, async () => {
+    const { follow, calls, messages, changes } = setupFollowNavigation();
+    follow.configure(true, 1);
+    const old = follow.update("https://example.com/old", 1);
+    await Promise.resolve();
+    assert.equal(calls.length, 1);
+
+    const tab = reconfigure ? 2 : 1;
+    if (reconfigure) follow.configure(true, tab);
+    const current = follow.update("https://example.com/new", 2);
+    await Promise.resolve();
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].tab, tab);
+    assert.equal(calls[1].url, "https://example.com/new");
+    calls[1].resolve();
+    await current;
+    const changeCount = changes.length;
+
+    calls[0].reject(new Error("stale navigation failed"));
+    await old;
+    assert.equal(follow.enabled, true);
+    assert.equal(follow.tabId, tab);
+    assert.equal(follow.pendingGrant, null);
+    assert.deepEqual(messages, []);
+    assert.equal(changes.length, changeCount);
+
+    // An intermediate URL is tolerated only while the new transition is expected.
+    follow.onUrl(tab, "https://example.com/loading");
+    assert.equal(follow.enabled, true);
+    follow.complete(tab, "https://example.com/new");
+    assert.equal(follow.enabled, true);
+    assert.deepEqual(messages, []);
+    follow.onUrl(tab, "https://example.com/manual");
+    assert.equal(follow.enabled, false);
+    assert.equal(messages.length, 1);
+  });
+}
+
+test("stale navigation rejection preserves a new pending permission grant", async () => {
+  const { follow, calls, messages, changes, denyPermission } = setupFollowNavigation();
+  follow.configure(true, 1);
+  const old = follow.update("https://example.com/old", 1);
+  await Promise.resolve();
+  assert.equal(calls.length, 1);
+  denyPermission();
+  await follow.update("https://new.example/movie", 2);
+  assert.equal(follow.pendingGrant, "https://new.example/movie");
+  const previousMessages = [...messages],
+    changeCount = changes.length;
+
+  calls[0].reject(new Error("stale navigation failed"));
+  await old;
+  assert.equal(follow.enabled, true);
+  assert.equal(follow.pendingGrant, "https://new.example/movie");
+  assert.deepEqual(messages, previousMessages);
+  assert.equal(changes.length, changeCount);
+});
+
+test("current navigation rejection disables autofollow and reports the error", async () => {
+  const { follow, calls, messages, changes } = setupFollowNavigation();
+  follow.configure(true, 1);
+  const current = follow.update("https://example.com/new", 1);
+  await Promise.resolve();
+  assert.equal(calls.length, 1);
+  const changeCount = changes.length;
+
+  calls[0].reject(new Error("current navigation failed"));
+  await current;
+  assert.equal(follow.enabled, false);
+  assert.equal(follow.pendingGrant, null);
+  assert.deepEqual(messages, [
+    "Не удалось выполнить автопереход. Подключите вкладку повторно.",
+  ]);
+  assert.equal(changes.length, changeCount + 1);
+  await follow.update("https://example.com/next", 2);
+  assert.equal(calls.length, 1);
+});
