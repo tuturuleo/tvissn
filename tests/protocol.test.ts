@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { wireSchema } from "../extension/src/room";
 import {
   applyCommand,
   parseYoutube,
@@ -69,6 +70,36 @@ test("shared timeline advances by rate and freezes on pause", () => {
   );
   assert.equal(positionAt(s, 9000), 27);
   assert.equal(s.updatedBy, "B");
+});
+test("pause clamps the shared timeline to a valid snapshot position", () => {
+  const now = Date.now();
+  const s: Playback = {
+    ...initial,
+    videoId: "dQw4w9WgXcQ",
+    playing: true,
+    position: 604790,
+    rate: 2,
+    anchor: now - 60000,
+  };
+  const result = applyCommand(
+    s,
+    { type: "pause", commandId: id, mediaRevision: s.mediaRevision },
+    "A",
+    now,
+  );
+  assert.equal(result.position, 604800);
+  assert.equal(result.playing, false);
+  assert.doesNotThrow(() =>
+    wireSchema.parse({
+      type: "snapshot",
+      snapshot: {
+        epoch: crypto.randomUUID(),
+        serverTime: now,
+        playback: result,
+        participants: [],
+      },
+    }),
+  );
 });
 test("old video commands cannot mutate a replacement video", () => {
   const s = applyCommand(
