@@ -9,6 +9,9 @@ if (!(globalThis as any)[guard]) {
   start();
 }
 function start() {
+  type PlayAttempt = { video: HTMLVideoElement; mediaRevision: number };
+  let blocked: PlayAttempt | null = null,
+    playAttempt: PlayAttempt | null = null;
   let video: HTMLVideoElement | null = null,
     shared: Playback | null = null,
     primary = false,
@@ -16,8 +19,7 @@ function start() {
     active = true,
     offset = 0,
     ignoreUntil = 0,
-    last = { position: 0, time: 0 },
-    blocked = false;
+    last = { position: 0, time: 0 };
   const videoKeys = new WeakMap<HTMLVideoElement, string>();
   let counter = 0,
     chosenVideoKey: string | null = null;
@@ -69,7 +71,7 @@ function start() {
     widget.update({
       playing: !!shared?.playing,
       connected,
-      blocked,
+      blocked: !!blocked,
       players: playerOptions,
       selectedPlayer,
       autoFollow,
@@ -98,26 +100,41 @@ function start() {
         ignoreUntil = Date.now() + 1400;
         video.playbackRate = shared.rate;
       }
-      if (shared.playing && video.paused && !blocked) {
+      if (shared.playing && video.paused && !blocked && !playAttempt) {
         ignoreUntil = Date.now() + 1400;
-        void video.play().catch(() => {
-          blocked = true;
-          updatePanel();
-          status("connecting");
-        });
+        const attempt = { video, mediaRevision: shared.mediaRevision };
+        playAttempt = attempt;
+        void video.play().then(
+          () => {
+            if (playAttempt === attempt) playAttempt = null;
+          },
+          () => {
+            if (
+              playAttempt !== attempt ||
+              video !== attempt.video ||
+              shared?.mediaRevision !== attempt.mediaRevision
+            )
+              return;
+            playAttempt = null;
+            blocked = attempt;
+            updatePanel();
+            status("connecting");
+          },
+        );
       }
       if (!shared.playing && !video.paused) {
         ignoreUntil = Date.now() + 1400;
         video.pause();
       }
     } catch {
+      playAttempt = null;
       status("error");
       widget?.showError("Плеер не принимает управление");
     }
   }
   const onPlay = () => {
     if (primary) {
-      blocked = false;
+      blocked = null;
       updatePanel();
       status("ready");
     }
@@ -187,11 +204,14 @@ function start() {
       if (video)
         for (const [name, fn] of events) video.removeEventListener(name, fn);
       video = found;
+      blocked = null;
+      playAttempt = null;
       last = { position: 0, time: 0 };
       if (video)
         for (const [name, fn] of events) video.addEventListener(name, fn);
       if (primary) {
         widget?.videoChanged();
+        updatePanel();
         apply(true);
       }
     }
@@ -229,16 +249,20 @@ function start() {
       return;
     }
     if (m.type !== "TVISSN_STATE") return;
+    active = true;
+    const before = shared;
+    shared = (m.snapshot as Snapshot).playback;
+    if (before?.mediaRevision !== shared.mediaRevision) {
+      blocked = null;
+      playAttempt = null;
+    }
+    primary = !!m.primary;
+    connected = !!m.connected;
+    offset = m.serverTime - Date.now();
     if (m.videoKey && m.videoKey !== chosenVideoKey) {
       chosenVideoKey = m.videoKey;
       findVideo(false);
     }
-    active = true;
-    const before = shared;
-    shared = (m.snapshot as Snapshot).playback;
-    primary = !!m.primary;
-    connected = !!m.connected;
-    offset = m.serverTime - Date.now();
     if (!primary) {
       removePanel();
       return;
