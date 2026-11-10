@@ -240,7 +240,7 @@ test('MQTT subscribe closes the socket when SUBACK times out and never opens one
  const original=(globalThis as any).WebSocket;(globalThis as any).WebSocket=FakeSocket;
  try{
   const got:string[]=[];
-  await assert.rejects(mqttSubscribe('wss://broker.test/mqtt','t/#',new AbortController().signal,t=>got.push(t),20),/не ответил/);
+  await assert.rejects(mqttSubscribe('wss://broker.test/mqtt','t/#',new AbortController().signal,t=>got.push(t),undefined,20),/не ответил/);
   assert.equal(sockets.length,1);assert.equal(sockets[0].readyState,3);
   const topic=[...new TextEncoder().encode('t/x')];
   sockets[0].deliver(frame(0x30,[0,topic.length,...topic,...new TextEncoder().encode('late')]));
@@ -248,5 +248,40 @@ test('MQTT subscribe closes the socket when SUBACK times out and never opens one
   const abort=new AbortController();abort.abort();
   await assert.rejects(mqttSubscribe('wss://broker.test/mqtt','t/#',abort.signal,t=>got.push(t)));
   assert.equal(sockets.length,1);
+ }finally{(globalThis as any).WebSocket=original;}
+});
+test('MQTT publish and subscribe time out while the socket is CONNECTING', {timeout:1000},async()=>{
+ const {mqttPublish,mqttSubscribe}=await import('../extension/src/mqtt');
+ const sockets:any[]=[];
+ // Opening and closing never dispatch events, as with a stalled TCP/TLS connection.
+ class FakeSocket{static OPEN=1;readyState=0;binaryType='';onopen:any;onmessage:any;onclose:any;onerror:any;
+  constructor(public url:string,public proto:string){sockets.push(this);}
+  send(){assert.fail('Socket is still CONNECTING');}
+  close(){this.readyState=3;}
+ }
+ const original=(globalThis as any).WebSocket;(globalThis as any).WebSocket=FakeSocket;
+ try{
+  await assert.rejects(mqttPublish('wss://broker.test/mqtt','t/x','payload',20),/не ответил/);
+  assert.equal(sockets.length,1);assert.equal(sockets[0].readyState,3);
+  await assert.rejects(mqttSubscribe('wss://broker.test/mqtt','t/#',new AbortController().signal,()=>{},20),/не ответил/);
+  assert.equal(sockets.length,2);assert.equal(sockets[1].readyState,3);
+ }finally{(globalThis as any).WebSocket=original;}
+});
+test('MQTT subscribe aborts while CONNECTING without waiting for onclose', {timeout:1000},async()=>{
+ const {mqttSubscribe}=await import('../extension/src/mqtt');
+ const sockets:any[]=[];
+ class FakeSocket{static OPEN=1;readyState=0;binaryType='';onopen:any;onmessage:any;onclose:any;onerror:any;
+  constructor(public url:string,public proto:string){sockets.push(this);}
+  send(){assert.fail('Socket is still CONNECTING');}
+  close(){this.readyState=3;}
+ }
+ const original=(globalThis as any).WebSocket;(globalThis as any).WebSocket=FakeSocket;
+ try{
+  const abort=new AbortController();
+  const pending=mqttSubscribe('wss://broker.test/mqtt','t/#',abort.signal,()=>{});
+  assert.equal(sockets.length,1);assert.equal(sockets[0].readyState,0);
+  const rejected=assert.rejects(pending,/Подключение к брокеру MQTT отменено\./);
+  abort.abort();await rejected;
+  assert.equal(sockets[0].readyState,3);
  }finally{(globalThis as any).WebSocket=original;}
 });
