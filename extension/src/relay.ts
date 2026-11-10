@@ -60,18 +60,27 @@ export async function unseal(secret: string, text: string): Promise<string | nul
     return new TextDecoder().decode(await pipe(packed, new DecompressionStream("deflate-raw")));
   } catch { return null; }
 }
-export async function publish(room: Room, text: string) {
+// Returns the MQTT topic the code was retained under (so it can be cleared later); ntfy messages expire on their own.
+export async function publish(room: Room, text: string): Promise<string | null> {
   const { topic } = await derive(room.secret);
   const body = await seal(room.secret, text);
   if (isMqtt(room.server)) {
     // Each message gets its own retained subtopic, so the answer does not replace the stored invitation.
     const id = [...crypto.getRandomValues(new Uint8Array(6))].map(b => b.toString(16).padStart(2, "0")).join("");
-    return mqttPublish(room.server, `tvissn/${topic}/${id}`, body);
+    const full = `tvissn/${topic}/${id}`;
+    await mqttPublish(room.server, full, body);
+    return full;
   }
   // ntfy turns bodies over 4 KB into attachments, which the subscriber would have to fetch separately.
   if (body.length > 3900) throw new Error("Код слишком большой для сервера обмена.");
   const r = await fetch(`${room.server}/${topic}`, { method: "POST", body, cache: "no-store" });
   if (!r.ok) throw new Error(`Сервер обмена ответил ${r.status}.`);
+  return null;
+}
+// An empty retained payload makes an MQTT broker forget the stored message, so codes do not linger after pairing.
+export async function clear(room: Room, topics: string[]) {
+  if (!isMqtt(room.server)) return;
+  for (const topic of topics) await mqttPublish(room.server, topic, "");
 }
 // Streams the topic (stored history first, then live) until aborted, reconnecting after network errors.
 export async function subscribe(room: Room, signal: AbortSignal, onText: (text: string) => void, onError: (e: Error) => void) {
