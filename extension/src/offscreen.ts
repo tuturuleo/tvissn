@@ -130,9 +130,9 @@ async function start(name:string,offer?:string){
 async function applyAnswer(text:string){
  const a=decodePairing(text,"answer");
  if(!pc||!coordinator||a.pair!==pair||phase!=="offer")throw new Error("Ответ относится к другому подключению.");
- phase="connecting";stopRelay();
+ phase="connecting";
  try{await pc.setRemoteDescription({type:"answer",sdp:a.sdp});}catch(e){phase="offer";throw e;}
- checkingSince=Date.now();code="";invite="";notify();
+ stopRelay();checkingSince=Date.now();code="";invite="";notify();
 }
 function relayFailed(e:Error){net.relay=e.message;notice="Сервер обмена недоступен: "+e.message+" Можно обменяться кодами вручную.";notify();}
 async function create(name:string,server?:string){

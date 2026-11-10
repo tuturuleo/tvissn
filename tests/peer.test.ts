@@ -85,6 +85,65 @@ test('two offscreen peers exchange codes, commands and snapshots independently o
   for(const t of topics.values())for(const l of t.list)assert.ok(!l.includes('tvissn-p2p')&&!l.includes('Alice'));
  }finally{for(const timer of timers)clearInterval(timer);await a.rpc('CLOSE');await b.rpc('CLOSE');}
 });
+test('relay stays subscribed after a rejected answer until a retry succeeds, hello arrives or the peer closes',async t=>{
+ const {decodeRoom,seal}=await import('../extension/src/relay');
+ const bundle=(await build({entryPoints:['extension/src/offscreen.ts'],bundle:true,format:'iife',write:false,platform:'browser'})).outputFiles[0].text;
+ for(const scenario of ['relay','ANSWER','hello','CLOSE'])await t.test(scenario,async()=>{
+  class Channel {
+   label='tvissn-v1';readyState='connecting';bufferedAmount=0;
+   onopen:any;onmessage:any;onclose:any;onerror:any;
+   send(){}
+   close(){this.readyState='closed';}
+  }
+  let pc:PC;
+  class PC {
+   localDescription:any;remote:any;iceGatheringState='complete';connectionState='new';channel=new Channel();failNext=true;attempts=0;
+   constructor(){pc=this;}
+   createDataChannel(){return this.channel;}
+   async createOffer(){return {type:'offer',sdp:'local offer'};}
+   async setLocalDescription(d:any){this.localDescription=d;}
+   async setRemoteDescription(d:any){this.attempts++;if(this.failNext){this.failNext=false;throw new Error('answer rejected');}this.remote=d;}
+   close(){this.channel.close();this.connectionState='closed';}
+  }
+  let signal!:AbortSignal,push!:(message:string)=>void;
+  const fetch=async(url:string,init:any={})=>{
+   assert.equal(new URL(url).origin,'https://relay.test');
+   if(init.method==='POST')return new Response('{}');
+   signal=init.signal;
+   return new Response(new ReadableStream({start(c){
+    push=message=>c.enqueue(new TextEncoder().encode(JSON.stringify({id:crypto.randomUUID(),event:'message',message})+'\n'));
+    signal.addEventListener('abort',()=>c.close(),{once:true});
+   }}));
+  };
+  let listener:any,last:any;
+  const chrome={runtime:{id:'test',getURL:(p:string)=>'chrome-extension://test/'+p,onMessage:{addListener:(fn:any)=>{listener=fn;}},sendMessage:async(m:any)=>{last=m.state;}}};
+  runInNewContext(bundle,{chrome,RTCPeerConnection:PC,crypto,TextEncoder,TextDecoder,TextDecoderStream,ReadableStream,Response,Blob,CompressionStream,DecompressionStream,AbortController,queueMicrotask,fetch,btoa,atob,URL,console,setTimeout,clearTimeout,setInterval:()=>0,clearInterval});
+  const rpc=(type:string,data:any={})=>new Promise<any>((resolve,reject)=>listener({target:'peer',type,...data},{id:'test',url:'chrome-extension://test/background.js'},(r:any)=>r.ok?resolve(r.result):reject(Error(r.error))));
+  const waitFor=async(check:()=>boolean)=>{for(let i=0;i<50&&!check();i++)await new Promise(r=>setTimeout(r,10));assert.ok(check());};
+  try{
+   const offer=await rpc('CREATE',{name:'Alice',server:'relay.test'});
+   const room=decodeRoom(offer.invite),{pair,expires}=decodePairing(offer.code);
+   const answer=(sdp:string)=>encodePairing({v:1,kind:'answer',pair,expires,sdp});
+   await waitFor(()=>!!push);
+   push(await seal(room.secret,answer('rejected answer')));
+   await waitFor(()=>last.notice==='answer rejected');
+   assert.equal(last.phase,'offer');assert.equal(pc!.attempts,1);assert.equal(signal.aborted,false);
+   if(scenario==='relay'){
+    push(await seal(room.secret,answer('valid answer')));
+    await waitFor(()=>last.phase==='connecting');
+   }else if(scenario==='ANSWER')await rpc('ANSWER',{code:answer('valid answer')});
+   else if(scenario==='hello'){
+    pc!.channel.readyState='open';pc!.channel.onopen();
+    pc!.channel.onmessage({data:JSON.stringify({type:'hello',person:person('Bob')})});
+    assert.equal(last.phase,'connected');assert.equal(last.connected,true);
+   }else {await rpc('CLOSE');assert.equal(last.phase,'idle');}
+   if(scenario==='relay'||scenario==='ANSWER'){
+    assert.equal(last.phase,'connecting');assert.equal(pc!.attempts,2);assert.equal(pc!.remote.sdp,'valid answer');
+   }
+   assert.equal(signal.aborted,true);
+  }finally{await rpc('CLOSE');}
+ });
+});
 test('room JOIN only updates the current unfinished attempt when answer publication settles',async t=>{
  const {newRoom,encodeRoom,seal,unseal}=await import('../extension/src/relay');
  const bundle=(await build({entryPoints:['extension/src/offscreen.ts'],bundle:true,format:'iife',write:false,platform:'browser'})).outputFiles[0].text;
