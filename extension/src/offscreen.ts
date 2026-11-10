@@ -145,9 +145,11 @@ async function applyAnswer(text:string){
 }
 function relayFailed(e:Error){net.relay=e.message;notice="Сервер обмена недоступен: "+e.message+" Можно обменяться кодами вручную.";notify();}
 async function create(name:string,server?:string){
+ // Validate the exchange server first so a bad address leaves no half-started connection behind.
+ const r=server?newRoom(server):null;
  const result=await start(name);
- if(!server||hello)return result;
- const gen=generation,offerCode=code,r=newRoom(server),abort=new AbortController();relayAbort=abort;
+ if(!r||hello)return result;
+ const gen=generation,offerCode=code,abort=new AbortController();relayAbort=abort;
  net.relay=r.server;
  void relaySubscribe(r,abort.signal,text=>{
   if(gen!==generation||phase!=="offer")return;
