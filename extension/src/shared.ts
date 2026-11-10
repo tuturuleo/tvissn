@@ -9,6 +9,19 @@ export function samePage(a: string, b: string) {
     return false;
   }
 }
+export function pickPrimary<T extends { id: string; url: string; area: number }>(
+  candidates: Iterable<T>,
+  externalUrl: string | null | undefined,
+  selectedPlayer: string | null,
+): { matching: T[]; primary: T | undefined } {
+  const matching = externalUrl
+    ? [...candidates].filter((c) => samePage(c.url, externalUrl))
+    : [];
+  const primary =
+    matching.find((c) => c.id === selectedPlayer) ||
+    [...matching].sort((a, b) => b.area - a.area)[0];
+  return { matching, primary };
+}
 export function isNewer(a: string, b: string) {
   const x = a.split(".").map(Number),
     y = b.split(".").map(Number);
