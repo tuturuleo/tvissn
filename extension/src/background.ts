@@ -1,5 +1,5 @@
 import { FollowMode } from "./follow";
-import { isNewer, samePage } from "./shared";
+import { isNewer, pickPrimary, samePage } from "./shared";
 import type { Snapshot } from "../../shared/protocol";
 
 let session: {id:string;name:string} | null = null,
@@ -130,14 +130,11 @@ async function deliver() {
   if (!enabled || targetTab === null || !snapshot) return;
   for (const [key, c] of candidates)
     if (Date.now() - c.seenAt > 6000) candidates.delete(key);
-  const all = [...candidates.values()].filter(
-    (c) =>
-      snapshot?.playback.externalUrl &&
-      samePage(c.url, snapshot.playback.externalUrl),
+  const { matching, primary } = pickPrimary(
+    candidates.values(),
+    snapshot.playback.externalUrl,
+    selectedPlayer,
   );
-  const primary =
-    all.find((c) => c.id === selectedPlayer) ||
-    all.sort((a, b) => b.area - a.area)[0];
   for (const frameId of new Set([...candidates.values()].map((c) => c.frameId)))
     void chrome.tabs
       .sendMessage(
@@ -149,7 +146,7 @@ async function deliver() {
           serverTime: Date.now() + clockOffset,
           primary: frameId === primary?.frameId,
           videoKey: primary?.videoKey,
-          players: all.map((p) => ({ id: p.id, title: p.title })),
+          players: matching.map((p) => ({ id: p.id, title: p.title })),
           selectedPlayer,
           autoFollow: follow.enabled,
         },
@@ -239,15 +236,12 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       return;
     }
     if (message.type === "TVISSN_INTENT") {
-      const primary = [...candidates.values()].filter(
-        (c) =>
-          snapshot?.playback.externalUrl &&
-          samePage(c.url, snapshot.playback.externalUrl),
+      const { primary } = pickPrimary(
+        candidates.values(),
+        snapshot?.playback.externalUrl,
+        selectedPlayer,
       );
-      const chosen =
-        primary.find((c) => c.id === selectedPlayer) ||
-        primary.sort((a, b) => b.area - a.area)[0];
-      if (sender.frameId !== chosen?.frameId) return;
+      if (sender.frameId !== primary?.frameId) return;
       void init
         .then(() => sendCommand(message.command))
         .then(() => reply({ ok: true }))

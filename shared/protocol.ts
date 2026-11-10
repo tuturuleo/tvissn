@@ -23,6 +23,7 @@ export interface Snapshot {
   epoch: string;
 }
 export const rates = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+export const MAX_POSITION = 604800;
 export const commandSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.enum(["load", "loadExternal"]),
@@ -33,7 +34,7 @@ export const commandSchema = z.discriminatedUnion("type", [
     type: z.enum(["play", "pause", "seek", "rate", "ended"]),
     commandId: z.string().uuid(),
     mediaRevision: z.number().int().nonnegative(),
-    position: z.number().finite().min(0).max(604800).optional(),
+    position: z.number().finite().min(0).max(MAX_POSITION).optional(),
     rate: z
       .number()
       .refine((n) => rates.includes(n))
@@ -78,7 +79,7 @@ export function parseYoutube(
       position =
         Number(m[1] || 0) * 3600 + Number(m[2] || 0) * 60 + Number(m[3] || 0);
     }
-    return { videoId, position: Math.min(position, 604800) };
+    return { videoId, position: Math.min(position, MAX_POSITION) };
   } catch {
     return null;
   }
@@ -149,7 +150,7 @@ export function applyCommand(
     position:
       c.type === "seek" || c.type === "ended"
         ? c.position!
-        : positionAt(s, now),
+        : Math.min(MAX_POSITION, positionAt(s, now)),
     playing:
       c.type === "play"
         ? true

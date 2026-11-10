@@ -6,8 +6,71 @@ import { build } from "esbuild";
 import { Window } from "happy-dom";
 import { applyCommand, type Playback } from "../shared/protocol";
 
-import { isNewer, samePage } from "../extension/src/shared";
+import { isNewer, pickPrimary, samePage } from "../extension/src/shared";
 import identity from "../extension/identity.json";
+
+test("pickPrimary returns no players without an external URL", () => {
+  const candidates = [{ id: "a", url: "https://example.com/video", area: 100 }];
+  for (const externalUrl of [undefined, null, ""]) {
+    assert.deepEqual(pickPrimary(candidates, externalUrl, "a"), {
+      matching: [],
+      primary: undefined,
+    });
+  }
+});
+
+test("pickPrimary prefers the selected player over a larger player", () => {
+  const url = "https://example.com/video";
+  const candidates = [
+    { id: "large", url, area: 1000 },
+    { id: "selected", url, area: 100 },
+  ];
+  assert.equal(pickPrimary(candidates, url, "selected").primary, candidates[1]);
+});
+
+test("pickPrimary falls back to the largest player and keeps the first on ties", () => {
+  const url = "https://example.com/video";
+  const candidates = [
+    { id: "small", url, area: 100 },
+    { id: "large", url, area: 1000 },
+    { id: "tied", url, area: 1000 },
+  ];
+  for (const selectedPlayer of [null, "missing"]) {
+    assert.equal(pickPrimary(candidates, url, selectedPlayer).primary, candidates[1]);
+  }
+  assert.deepEqual(pickPrimary([], url, null), {
+    matching: [],
+    primary: undefined,
+  });
+});
+
+test("pickPrimary filters other paths and searches but ignores hashes", () => {
+  const url = "https://example.com/video?episode=1";
+  const candidates = [
+    { id: "same", url, area: 100 },
+    { id: "path", url: "https://example.com/other?episode=1", area: 1000 },
+    { id: "search", url: "https://example.com/video?episode=2", area: 1000 },
+    { id: "hash", url: url + "#player", area: 200 },
+  ];
+  const result = pickPrimary(candidates, url, "path");
+  assert.deepEqual(result.matching, [candidates[0], candidates[3]]);
+  assert.equal(result.primary, candidates[3]);
+});
+
+test("pickPrimary preserves input and matching insertion order", () => {
+  const url = "https://example.com/video";
+  const candidates = [
+    { id: "small", url, area: 100 },
+    { id: "large", url, area: 1000 },
+    { id: "medium", url, area: 500 },
+  ];
+  const original = structuredClone(candidates);
+  assert.deepEqual(pickPrimary(candidates, url, null).matching, original);
+  assert.deepEqual(candidates, original);
+  const map = new Map(candidates.map((c) => [c.id, c]));
+  assert.deepEqual(pickPrimary(map.values(), url, null).matching, original);
+  assert.deepEqual([...map.values()], original);
+});
 
 test("stable ID derives from the checked-in public key; Chrome versions compare numerically", () => {
   const id = [
