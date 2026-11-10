@@ -85,6 +85,75 @@ test('two offscreen peers exchange codes, commands and snapshots independently o
   for(const t of topics.values())for(const l of t.list)assert.ok(!l.includes('tvissn-p2p')&&!l.includes('Alice'));
  }finally{for(const timer of timers)clearInterval(timer);await a.rpc('CLOSE');await b.rpc('CLOSE');}
 });
+test('room JOIN only updates the current unfinished attempt when answer publication settles',async t=>{
+ const {newRoom,encodeRoom,seal,unseal}=await import('../extension/src/relay');
+ const bundle=(await build({entryPoints:['extension/src/offscreen.ts'],bundle:true,format:'iife',write:false,platform:'browser'})).outputFiles[0].text;
+ for(const scenario of ['success','CLOSE','CREATE','hello','hello failure','failure'])await t.test(scenario,async()=>{
+  class Channel {
+   label='tvissn-v1';readyState='open';bufferedAmount=0;
+   onopen:any;onmessage:any;onclose:any;onerror:any;
+   send(){}
+   close(){this.readyState='closed';}
+  }
+  let pc:PC;
+  class PC {
+   localDescription:any;iceGatheringState='complete';connectionState='new';ondatachannel:any;onconnectionstatechange:any;
+   constructor(){pc=this;}
+   createDataChannel(){return new Channel();}
+   async createOffer(){return {type:'offer',sdp:'new offer'};}
+   async createAnswer(){return {type:'answer',sdp:'local answer'};}
+   async setLocalDescription(d:any){this.localDescription=d;}
+   async setRemoteDescription(){}
+   close(){this.connectionState='closed';}
+  }
+  const room=newRoom('relay.test'),invite=encodeRoom(room);
+  const offer=encodePairing({v:1,kind:'offer',pair:crypto.randomUUID(),expires:Date.now()+60000,sdp:'remote offer'});
+  const sealed=await seal(room.secret,offer);
+  let resolvePost!:(r:Response)=>void,rejectPost!:(e:Error)=>void,started!:()=>void,body='';
+  const publication=new Promise<Response>((resolve,reject)=>{resolvePost=resolve;rejectPost=reject;});
+  const publishing=new Promise<void>(resolve=>{started=resolve;});
+  const fetch=async(url:string,init:any={})=>{
+   assert.equal(new URL(url).origin,'https://relay.test');
+   if(init.method==='POST'){body=init.body;started();return publication;}
+   return new Response(new ReadableStream({start(c){
+    c.enqueue(new TextEncoder().encode(JSON.stringify({id:'offer',event:'message',message:sealed})+'\n'));
+    init.signal.addEventListener('abort',()=>c.close(),{once:true});
+   }}));
+  };
+  let listener:any,last:any;
+  const chrome={runtime:{id:'test',getURL:(p:string)=>'chrome-extension://test/'+p,onMessage:{addListener:(fn:any)=>{listener=fn;}},sendMessage:async(m:any)=>{last=m.state;}}};
+  runInNewContext(bundle,{chrome,RTCPeerConnection:PC,crypto,TextEncoder,TextDecoder,TextDecoderStream,ReadableStream,Response,Blob,CompressionStream,DecompressionStream,AbortController,queueMicrotask,fetch,btoa,atob,URL,console,setTimeout,clearTimeout,setInterval:()=>0,clearInterval});
+  const rpc=(type:string,data:any={})=>new Promise<any>((resolve,reject)=>listener({target:'peer',type,...data},{id:'test',url:'chrome-extension://test/background.js'},(r:any)=>r.ok?resolve(r.result):reject(Error(r.error))));
+  const joining=rpc('JOIN',{name:'Bob',code:' '+invite+' '});
+  try{
+   await publishing;
+   const answer=last.code;
+   assert.equal(last.phase,'answer');assert.equal(decodePairing(answer,'answer').pair,decodePairing(offer).pair);
+   assert.equal(await unseal(room.secret,body),answer);
+   if(scenario==='CLOSE')await rpc('CLOSE');
+   if(scenario==='CREATE')await rpc('CREATE',{name:'New attempt'});
+   if(scenario.startsWith('hello')){
+    const ch=new Channel();pc!.ondatachannel({channel:ch});
+    ch.onmessage({data:JSON.stringify({type:'hello',person:person('Alice')})});
+    assert.equal(last.connected,true);assert.equal(last.code,'');assert.equal(last.invite,'');
+   }
+   const before=await rpc('STATE');
+   if(scenario.includes('failure'))rejectPost(new Error('publication failed'));else resolvePost(new Response('{}'));
+   const result=await joining;
+   assert.deepEqual(result,await rpc('STATE'));assert.deepEqual(last,result);
+   if(['CLOSE','CREATE','hello','hello failure'].includes(scenario)){
+    assert.deepEqual(result,before);
+    assert.equal(result.invite,'');
+    if(scenario==='CLOSE'){assert.equal(result.phase,'idle');assert.equal(result.code,'');}
+    if(scenario==='CREATE'){assert.equal(result.phase,'offer');assert.equal(result.person.name,'New attempt');assert.equal(decodePairing(result.code,'offer').sdp,'new offer');}
+   }else{
+    assert.equal(result.phase,'answer');assert.equal(result.code,answer);
+    if(scenario==='success'){assert.equal(result.invite,invite);assert.equal(result.notice,'');}
+    else {assert.equal(result.invite,'');assert.equal(result.diagnostics.relay,'publication failed');assert.match(result.notice,/publication failed.*Отправьте ответный код другу вручную/);}
+   }
+  }finally{resolvePost(new Response('{}'));await joining;await rpc('CLOSE');}
+ });
+});
 test('CREATE with an invalid exchange server fails before any offer or RTCPeerConnection exists',async()=>{
  let made=0;
  class PC {constructor(){made++;}}
