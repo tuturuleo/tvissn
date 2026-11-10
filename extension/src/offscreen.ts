@@ -1,6 +1,6 @@
 import { decodePairing, encodePairing } from "./pairing";
 import { LocalRoom, participantSchema, wireSchema } from "./room";
-import { decodeRoom, encodeRoom, isRoomCode, newRoom, publish as relayPublish, subscribe as relaySubscribe, type Room } from "./relay";
+import { decodeRoom, encodeRoom, isRoomCode, newRoom, clear as relayClear, publish as relayPublish, subscribe as relaySubscribe, type Room } from "./relay";
 import { judgeNat, type Mapped } from "./nat";
 import type { Participant, Snapshot } from "../../shared/protocol";
 let pc:RTCPeerConnection|null=null, channel:RTCDataChannel|null=null, room:LocalRoom|null=null;
@@ -20,8 +20,16 @@ function notify(){void chrome.runtime.sendMessage({target:"background",type:"PEE
 function send(message:unknown){if(channel?.readyState!=="open")throw new Error("Нет P2P-соединения.");if(channel.bufferedAmount>262144)throw new Error("Соединение перегружено.");channel.send(JSON.stringify(message));}
 function publish(){if(!room||!coordinator)return;latest=room.snapshot(peer);if(hello)send({type:"snapshot",snapshot:latest});notify();}
 function stopRelay(){relayAbort?.abort();relayAbort=null;}
+// Retained MQTT codes published by this side; erased once the friend says hello or the attempt is abandoned.
+let relayed:{room:Room,topics:string[]}|null=null;
+function clearRelayed(){if(!relayed)return;const {room:r,topics}=relayed;relayed=null;void relayClear(r,topics).catch(()=>{});}
+function remember(gen:number,r:Room,topic:string|null){
+ if(!topic)return;
+ if(gen!==generation||hello){void relayClear(r,[topic]).catch(()=>{});return;}
+ if(relayed?.room===r)relayed.topics.push(topic);else{clearRelayed();relayed={room:r,topics:[topic]};}
+}
 function close(reason=""){
- generation++; hello=false; stopRelay(); channel?.close();pc?.close();channel=null;pc=null;peer=null;code="";invite="";notice="";offset=0;ping=null;checkingSince=0;
+ generation++; hello=false; stopRelay(); clearRelayed(); channel?.close();pc?.close();channel=null;pc=null;peer=null;code="";invite="";notice="";offset=0;ping=null;checkingSince=0;
  for(const p of pending.values()){clearTimeout(p.timer);p.reject(new Error("Соединение закрыто."));}pending.clear();
  room?.pause();if(room&&coordinator)latest=room.snapshot(null);phase=reason?"disconnected":"idle";error=reason;notify();
 }
@@ -49,7 +57,7 @@ function bind(ch:RTCDataChannel,gen:number){
    const m=wireSchema.parse(JSON.parse(event.data));received=Date.now();
    if(m.type==="hello"){
     if(hello||m.person.id===room!.self.id)throw new Error("Некорректное рукопожатие.");
-    peer=m.person;hello=true;everConnected=true;code="";invite="";notice="";error="";phase="connected";stopRelay();
+    peer=m.person;hello=true;everConnected=true;code="";invite="";notice="";error="";phase="connected";stopRelay();clearRelayed();
     if(coordinator)publish();else notify();return;
    }
    if(!hello)throw new Error("Рукопожатие не завершено.");
@@ -128,9 +136,11 @@ async function applyAnswer(text:string){
 }
 function relayFailed(e:Error){net.relay=e.message;notice="Сервер обмена недоступен: "+e.message+" Можно обменяться кодами вручную.";notify();}
 async function create(name:string,server?:string){
+ // Validate the exchange server first so a bad address leaves no half-started connection behind.
+ const r=server?newRoom(server):null;
  const result=await start(name);
- if(!server||hello)return result;
- const gen=generation,offerCode=code,r=newRoom(server),abort=new AbortController();relayAbort=abort;
+ if(!r||hello)return result;
+ const gen=generation,offerCode=code,abort=new AbortController();relayAbort=abort;
  net.relay=r.server;
  void relaySubscribe(r,abort.signal,text=>{
   if(gen!==generation||phase!=="offer")return;
@@ -138,7 +148,7 @@ async function create(name:string,server?:string){
   void applyAnswer(text).catch(e=>{notice=(e as Error).message;notify();});
  },relayFailed);
  // The room code is shown only once the invitation is stored, so a friend can never look for it too early.
- try{await relayPublish(r,offerCode);if(gen===generation&&phase==="offer"){invite=encodeRoom(r);notify();}}catch(e){if(gen===generation)relayFailed(e as Error);}
+ try{remember(gen,r,await relayPublish(r,offerCode));if(gen===generation&&phase==="offer"){invite=encodeRoom(r);notify();}}catch(e){if(gen===generation)relayFailed(e as Error);}
  return state();
 }
 async function joinRoom(name:string,text:string){
@@ -153,7 +163,7 @@ async function joinRoom(name:string,text:string){
  const result=await start(name,offerCode);
  if(hello)return result;
  const g=generation;
- try{await relayPublish(r,code);invite=text.trim();notice="";}catch(e){if(g===generation){net.relay=(e as Error).message;notice="Не удалось отправить ответ через сервер обмена: "+(e as Error).message+" Отправьте ответный код другу вручную.";}}
+ try{remember(g,r,await relayPublish(r,code));invite=text.trim();notice="";}catch(e){if(g===generation){net.relay=(e as Error).message;notice="Не удалось отправить ответ через сервер обмена: "+(e as Error).message+" Отправьте ответный код другу вручную.";}}
  notify();return state();
 }
 async function command(input:unknown){
