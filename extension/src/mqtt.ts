@@ -13,20 +13,22 @@ type Packet = { type: number; flags: number; body: Uint8Array };
 type Session = { send(p: Uint8Array): void; next(type: number, ms: number): Promise<Packet>; onPublish(fn: (topic: string, payload: Uint8Array) => void): void; close(): void; closed: Promise<void> };
 function connect(url: string, signal?: AbortSignal): Promise<Session> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error("Подключение к брокеру MQTT отменено."));
     const ws = new WebSocket(url, "mqtt");
     ws.binaryType = "arraybuffer";
-    let buffer = new Uint8Array(0), publishFn: ((t: string, p: Uint8Array) => void) | null = null, ping: ReturnType<typeof setInterval> | undefined;
+    let buffer = new Uint8Array(0), publishFn: ((t: string, p: Uint8Array) => void) | null = null, ping: ReturnType<typeof setInterval> | undefined, ended = false;
     const waiters: { type: number; resolve: (p: Packet) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }[] = [];
     let finish!: () => void; const closed = new Promise<void>(r => { finish = r; });
-    const fail = (e: Error) => { clearInterval(ping); for (const w of waiters.splice(0)) { clearTimeout(w.timer); w.reject(e); } finish(); reject(e); };
+    const fail = (e: Error) => { ended = true; clearInterval(ping); signal?.removeEventListener("abort", onAbort); for (const w of waiters.splice(0)) { clearTimeout(w.timer); w.reject(e); } finish(); reject(e); };
     const session: Session = {
       send: p => { if (ws.readyState === WebSocket.OPEN) ws.send(p); },
       next: (type, ms) => new Promise((res, rej) => { const timer = setTimeout(() => { const i = waiters.findIndex(w => w.timer === timer); if (i >= 0) waiters.splice(i, 1); rej(new Error("Брокер MQTT не ответил.")); }, ms); waiters.push({ type, resolve: res, reject: rej, timer }); }),
       onPublish: fn => { publishFn = fn; },
-      close: () => { clearInterval(ping); try { session.send(new Uint8Array([0xe0, 0])); ws.close(); } catch {} finish(); },
+      close: () => { ended = true; clearInterval(ping); publishFn = null; signal?.removeEventListener("abort", onAbort); try { session.send(new Uint8Array([0xe0, 0])); ws.close(); } catch {} finish(); },
       closed,
     };
-    signal?.addEventListener("abort", () => session.close(), { once: true });
+    const onAbort = () => session.close();
+    signal?.addEventListener("abort", onAbort, { once: true });
     ws.onerror = () => fail(new Error("Брокер MQTT недоступен."));
     ws.onclose = () => fail(new Error("Брокер MQTT закрыл соединение."));
     ws.onmessage = e => {
@@ -57,6 +59,7 @@ function connect(url: string, signal?: AbortSignal): Promise<Session> {
         session.send(packet(0x10, [...str("MQTT"), 4, 0x02, 0, 60, ...str(id)]));
         const ack = await pending;
         if (ack.body[1] !== 0) throw new Error(`Брокер MQTT отказал в подключении (${ack.body[1]}).`);
+        if (ended) throw new Error("Брокер MQTT закрыл соединение.");
         ping = setInterval(() => session.send(new Uint8Array([0xc0, 0])), 30000);
         resolve(session);
       } catch (e) { session.close(); fail(e as Error); }
@@ -73,13 +76,15 @@ export async function mqttPublish(url: string, topic: string, payload: string) {
     await ack;
   } finally { s.close(); }
 }
-export async function mqttSubscribe(url: string, filter: string, signal: AbortSignal, onPayload: (text: string) => void) {
+export async function mqttSubscribe(url: string, filter: string, signal: AbortSignal, onPayload: (text: string) => void, ackTimeout = 10000) {
   const s = await connect(url, signal);
-  s.onPublish((_topic, payload) => { if (payload.length) onPayload(decoder.decode(payload)); });
-  const pending = s.next(9, 10000);
-  s.send(packet(0x82, [0, 1, ...str(filter), 0]));
-  const ack = await pending;
-  if (ack.body[2] === 0x80) { s.close(); throw new Error("Брокер MQTT отказал в подписке."); }
-  await s.closed;
-  if (!signal.aborted) throw new Error("Брокер MQTT закрыл соединение.");
+  try {
+    s.onPublish((_topic, payload) => { if (payload.length) onPayload(decoder.decode(payload)); });
+    const pending = s.next(9, ackTimeout);
+    s.send(packet(0x82, [0, 1, ...str(filter), 0]));
+    const ack = await pending;
+    if (ack.body[2] === 0x80) throw new Error("Брокер MQTT отказал в подписке.");
+    await s.closed;
+    if (!signal.aborted) throw new Error("Брокер MQTT закрыл соединение.");
+  } catch (e) { s.close(); throw e; }
 }
