@@ -163,7 +163,7 @@ async function joinRoom(name:string,text:string){
  const result=await start(name,offerCode);
  if(hello)return result;
  const g=generation;
- try{remember(g,r,await relayPublish(r,code));invite=text.trim();notice="";}catch(e){if(g===generation){net.relay=(e as Error).message;notice="Не удалось отправить ответ через сервер обмена: "+(e as Error).message+" Отправьте ответный код другу вручную.";}}
+ try{remember(g,r,await relayPublish(r,code));if(g===generation&&!hello){invite=text.trim();notice="";}}catch(e){if(g===generation&&!hello){net.relay=(e as Error).message;notice="Не удалось отправить ответ через сервер обмена: "+(e as Error).message+" Отправьте ответный код другу вручную.";}}
  notify();return state();
 }
 async function command(input:unknown){
