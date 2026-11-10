@@ -131,3 +131,27 @@ test('MQTT relay keeps retained invitations, splits frames and delivers live ans
   await clear(newRoom('ntfy.sh'),['tvissn/x/y']);
  }finally{(globalThis as any).WebSocket=original;}
 });
+test('MQTT subscribe closes the socket when SUBACK times out and never opens one when already aborted',async()=>{
+ const {mqttSubscribe}=await import('../extension/src/mqtt');
+ // Broker acknowledges CONNECT but silently ignores SUBSCRIBE.
+ const sockets:any[]=[];
+ const frame=(type:number,body:number[])=>new Uint8Array([type,body.length,...body]);
+ class FakeSocket{static OPEN=1;readyState=0;binaryType='';onopen:any;onmessage:any;onclose:any;onerror:any;
+  constructor(public url:string,public proto:string){sockets.push(this);setTimeout(()=>{this.readyState=1;this.onopen();},0);}
+  deliver(bytes:Uint8Array){this.onmessage?.({data:bytes.slice().buffer});}
+  send(p:Uint8Array){if(p[0]>>4===1)this.deliver(frame(0x20,[0,0]));}
+  close(){if(this.readyState===3)return;this.readyState=3;setTimeout(()=>this.onclose?.(),0);}
+ }
+ const original=(globalThis as any).WebSocket;(globalThis as any).WebSocket=FakeSocket;
+ try{
+  const got:string[]=[];
+  await assert.rejects(mqttSubscribe('wss://broker.test/mqtt','t/#',new AbortController().signal,t=>got.push(t),20),/не ответил/);
+  assert.equal(sockets.length,1);assert.equal(sockets[0].readyState,3);
+  const topic=[...new TextEncoder().encode('t/x')];
+  sockets[0].deliver(frame(0x30,[0,topic.length,...topic,...new TextEncoder().encode('late')]));
+  await new Promise(r=>setTimeout(r,10));assert.equal(got.length,0);
+  const abort=new AbortController();abort.abort();
+  await assert.rejects(mqttSubscribe('wss://broker.test/mqtt','t/#',abort.signal,t=>got.push(t)));
+  assert.equal(sockets.length,1);
+ }finally{(globalThis as any).WebSocket=original;}
+});
