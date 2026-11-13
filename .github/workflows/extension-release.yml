@@ -6,6 +6,9 @@ on:
       - "extension/**"
       - "!extension/release.json"
       - "scripts/build-extension.mjs"
+      - "scripts/build-windows-installer.mjs"
+      - "installer/windows/**"
+      - "tests/**"
       - "scripts/prepare-extension-release.mjs"
       - "shared/**"
       - "src/components/ui/**"
@@ -22,11 +25,14 @@ concurrency:
   group: extension-release
   cancel-in-progress: false
 jobs:
-  release:
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
@@ -38,6 +44,86 @@ jobs:
         run: echo "value=$(node scripts/prepare-extension-release.mjs)" >> "$GITHUB_OUTPUT"
       - run: npm test
       - run: npm run build
+      - name: Transfer the prepared release without rebuilding
+        uses: actions/upload-artifact@v4
+        with:
+          name: prepared-extension
+          path: |
+            extension-dist/
+            extension/release.json
+            dist/extension/
+          if-no-files-found: error
+
+  windows:
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - uses: actions/download-artifact@v4
+        with:
+          name: prepared-extension
+          path: .
+      - name: Ensure Inno Setup 6 is available
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) {
+            choco install innosetup --version=6.4.3 --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw "Inno Setup installation failed" }
+          }
+          if (!(Test-Path $iscc)) { throw "Inno Setup compiler is unavailable" }
+          "ISCC_PATH=$iscc" >> $env:GITHUB_ENV
+      - run: npm run build:installer:windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            dist/extension/tvissn-extension-setup.exe
+            dist/extension/latest.json
+          if-no-files-found: error
+
+  release:
+    needs: [prepare, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: prepared-extension
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/extension
+      - name: Verify both release checksums and version
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          const latest = JSON.parse(readFileSync('dist/extension/latest.json'));
+          const release = JSON.parse(readFileSync('extension/release.json'));
+          if (latest.version !== process.env.VERSION || release.version !== latest.version ||
+              release.sourceCommit !== process.env.GITHUB_SHA) throw new Error('Release version/source mismatch');
+          for (const [file, expected] of [
+            ['tvissn-extension.zip', latest.sha256],
+            ['tvissn-extension-setup.exe', latest.windowsInstaller?.sha256],
+          ]) {
+            const actual = createHash('sha256').update(readFileSync('dist/extension/' + file)).digest('hex');
+            if (!expected || actual !== expected) throw new Error('Checksum mismatch: ' + file);
+          }
+          JS
       - name: Publish extension version metadata
         run: |
           git config user.name 'github-actions[bot]'
@@ -46,10 +132,11 @@ jobs:
           git commit -m "Release extension $VERSION"
           git push origin HEAD:main
         env:
-          VERSION: ${{ steps.version.outputs.value }}
-      - name: Publish ZIP and checksums as a GitHub release
+          VERSION: ${{ needs.prepare.outputs.version }}
+      - name: Publish EXE, ZIP and checksums together
         run: |
-          gh release create "extension-v$VERSION" dist/extension/tvissn-extension.zip dist/extension/latest.json --target "$(git rev-parse HEAD)" --title "tvissn extension $VERSION" --notes-file extension/RELEASE_NOTES.md
+          gh release create "extension-v$VERSION" dist/extension/tvissn-extension.zip dist/extension/tvissn-extension-setup.exe dist/extension/latest.json --draft --target "$(git rev-parse HEAD)" --title "tvissn extension $VERSION" --notes-file extension/RELEASE_NOTES.md
+          gh release edit "extension-v$VERSION" --draft=false
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.version.outputs.value }}
+          VERSION: ${{ needs.prepare.outputs.version }}

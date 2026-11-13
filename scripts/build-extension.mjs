@@ -86,7 +86,18 @@ await writeFile(
 );
 await writeFile(
   out + "/INSTALL.txt",
-  `tvissn ${release.version}\nID: ${identity.id}\n\nChrome/Chromium: extract the ZIP to a permanent folder; open chrome://extensions, enable Developer mode and choose Load unpacked. Select this folder.\n\nUpdate: replace the contents of the SAME folder with the new ZIP, then click Reload on chrome://extensions. Do not delete the extension. Its ID and settings remain stable.\n`,
+  `tvissn ${release.version}\nID: ${identity.id}\n
+Windows: run tvissn-extension-setup.exe yourself. No administrator rights are required.
+Default folder: %LOCALAPPDATA%\\tvissn\\extension. You may choose another permanent folder.
+Already using an unpacked tvissn? Select its EXACT existing folder containing manifest.json on the first installer run. Do not move it or remove the extension from Chrome.
+First install: open chrome://extensions, enable Developer mode, choose Load unpacked and select the exact folder shown by the installer.
+Update: run the NEW installer; it remembers the folder and replaces only package files. Then click Reload for tvissn on chrome://extensions. Do not remove the extension; keep the same folder to preserve its ID and settings.
+
+Other systems / ZIP: extract tvissn-extension.zip to a permanent folder and use Load unpacked in Developer mode. Update by extracting the new ZIP into the SAME folder, replacing package files, then click Reload. Do not remove the extension.
+
+The installer only manages files. Chrome on Windows restricts installation outside Chrome Web Store: https://developer.chrome.com/docs/extensions/how-to/distribute
+Initial browser loading and Reload remain manual. Chrome Web Store installation and automatic updates are a separate project. The EXE is unsigned.
+`,
 );
 await writeFile(out + "/LUCIDE-LICENSE.txt", await readFile("node_modules/lucide/LICENSE", "utf8"));
 const files = {};

@@ -1,3 +1,4 @@
+import { REPOSITORY, selectUpdatePackage, type PackageType } from "./update-package";
 import { FollowMode } from "./follow";
 import { isNewer, pickPrimary, samePage } from "./shared";
 import type { Snapshot } from "../../shared/protocol";
@@ -158,9 +159,8 @@ async function sendCommand(command: Record<string, unknown>) {
   if(!connected)throw new Error("Нет P2P-соединения с другом.");
   await peerRequest("COMMAND",{command:{...command,commandId:crypto.randomUUID(),...(["load","loadExternal"].includes(String(command.type))?{}:{mediaRevision:snapshot?.playback.mediaRevision})}});
 }
-const REPOSITORY = "tuturuleo/tvissn";
 const RELEASES_URL = `https://github.com/${REPOSITORY}/releases/latest`;
-type UpdateInfo = {installed:string;latest:string;available:boolean;downloadUrl:string|null;releasesUrl:string;checkedAt:number};
+type UpdateInfo = {installed:string;latest:string;available:boolean;downloadUrl:string|null;packageType:PackageType|null;releasesUrl:string;checkedAt:number};
 let updateInfo: UpdateInfo | null = null;
 // The repository is public, so the unauthenticated GitHub API is enough; results are cached to stay under its hourly limit.
 async function checkUpdate(force = false): Promise<UpdateInfo> {
@@ -170,16 +170,16 @@ async function checkUpdate(force = false): Promise<UpdateInfo> {
   const release = await r.json();
   const latest = String(release.tag_name || "").replace(/^extension-v/, "");
   if (!/^\d+\.\d+\.\d+\.\d+$/.test(latest)) throw new Error("Не удалось определить версию последнего выпуска.");
-  const asset = Array.isArray(release.assets) ? release.assets.find((a: any) => a?.name === "tvissn-extension.zip") : null;
-  const url = typeof asset?.browser_download_url === "string" && asset.browser_download_url.startsWith(`https://github.com/${REPOSITORY}/releases/download/`) ? asset.browser_download_url : null;
+  const platform = await chrome.runtime.getPlatformInfo();
+  const selected = selectUpdatePackage(release.assets, platform.os);
   const installed = chrome.runtime.getManifest().version;
-  updateInfo = { installed, latest, available: isNewer(latest, installed), downloadUrl: url, releasesUrl: RELEASES_URL, checkedAt: Date.now() };
+  updateInfo = { installed, latest, available: isNewer(latest, installed), downloadUrl: selected?.downloadUrl ?? null, packageType: selected?.packageType ?? null, releasesUrl: RELEASES_URL, checkedAt: Date.now() };
   return updateInfo;
 }
 async function downloadUpdate() {
   const info = await checkUpdate(true);
-  if (!info.downloadUrl) throw new Error("В последнем выпуске нет архива расширения.");
-  await chrome.downloads.download({ url: info.downloadUrl, filename: `tvissn-extension-${info.latest}.zip`, conflictAction: "uniquify" });
+  if (!info.downloadUrl) throw new Error("В последнем выпуске нет подходящего пакета расширения.");
+  await chrome.downloads.download({ url: info.downloadUrl, filename: info.packageType === "exe" ? `tvissn-extension-${info.latest}-setup.exe` : `tvissn-extension-${info.latest}.zip`, conflictAction: "uniquify" });
   return info;
 }
 async function stop() {
