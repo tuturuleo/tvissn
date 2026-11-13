@@ -1,5 +1,5 @@
-import { readFile, writeFile, readdir, mkdir, access, rm } from "node:fs/promises";
-import { resolve, join, dirname } from "node:path";
+import { readFile, writeFile, readdir, mkdir, access, rm, stat } from "node:fs/promises";
+import { resolve, join, dirname, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -60,10 +60,24 @@ async function main() {
     ...[process.env["ProgramFiles(x86)"], process.env.ProgramFiles, process.env.LOCALAPPDATA]
       .filter(Boolean).map((dir) => join(dir, "Inno Setup 6", "ISCC.exe")),
   ];
-  const compiler = candidates.find((candidate) => {
-    const result = spawnSync(candidate, ["/?"], { stdio: "ignore", windowsHide: true });
-    return !result.error && result.status === 0;
-  });
+  // A help invocation need not return zero. Resolve the file here and let the
+  // actual compilation report launch errors and compiler failures below.
+  let compiler;
+  for (const candidate of candidates) {
+    const paths = /[/\\]/.test(candidate) ? [candidate] :
+      (process.env.PATH ?? "").split(delimiter).map((dir) => resolve(dir, candidate));
+    for (const path of paths) {
+      try {
+        if ((await stat(path)).isFile()) {
+          compiler = path;
+          break;
+        }
+      } catch (error) {
+        if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+      }
+    }
+    if (compiler) break;
+  }
   if (!compiler) throw new Error("Inno Setup compiler not found. Install Inno Setup 6 locally or set ISCC_PATH to ISCC.exe. No tools are downloaded by this script.");
 
   const generated = resolve("dist/installer");
