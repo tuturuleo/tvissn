@@ -34,7 +34,9 @@ russian.SelectDirDesc=Выберите постоянную папку расш�
 russian.SelectDirLabel3=Если tvissn уже загружен вручную, выберите ТОЧНО его прежнюю папку с manifest.json. Не удаляйте расширение из Chrome. Профили браузера не изменяются.
 
 [Files]
-#include "{#GeneratedDir}\package-files.iss"
+; Preprocessor directive lines take expressions: inline directives are not
+; expanded inside them, so the defined variable is referenced directly.
+#include GeneratedDir + "\package-files.iss"
 
 [Code]
 var
@@ -47,7 +49,7 @@ begin
     Result := ExpandConstant('{localappdata}\tvissn\extension');
 end;
 
-#include "{#GeneratedDir}\verify-files.iss"
+#include GeneratedDir + "\verify-files.iss"
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin

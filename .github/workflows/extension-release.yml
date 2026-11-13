@@ -79,8 +79,17 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Inno Setup installation failed" }
           }
           if (!(Test-Path $iscc)) { throw "Inno Setup compiler is unavailable" }
+          # Read the version from the file: ISCC /? exits nonzero and would fail this step.
+          $info = (Get-Item -LiteralPath $iscc).VersionInfo
+          Write-Host "Inno Setup compiler: $iscc (product $($info.ProductVersion), file $($info.FileVersion))"
           "ISCC_PATH=$iscc" >> $env:GITHUB_ENV
       - run: npm run build:installer:windows
+      - name: Show build outputs
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse -File dist | ForEach-Object { "{0,12}  {1}" -f $_.Length, $_.FullName }
+          if (Test-Path dist/extension/latest.json) { Get-Content dist/extension/latest.json }
       - uses: actions/upload-artifact@v4
         with:
           name: windows-installer
@@ -105,6 +114,8 @@ jobs:
         with:
           name: windows-installer
           path: dist/extension
+      - name: Show downloaded release files
+        run: ls -la dist/extension && cat dist/extension/latest.json extension/release.json
       - name: Verify both release checksums and version
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -115,13 +126,16 @@ jobs:
           const latest = JSON.parse(readFileSync('dist/extension/latest.json'));
           const release = JSON.parse(readFileSync('extension/release.json'));
           if (latest.version !== process.env.VERSION || release.version !== latest.version ||
-              release.sourceCommit !== process.env.GITHUB_SHA) throw new Error('Release version/source mismatch');
+              release.sourceCommit !== process.env.GITHUB_SHA) {
+            throw new Error(`Release version/source mismatch: expected ${process.env.VERSION} from ${process.env.GITHUB_SHA}, ` +
+              `latest.json ${latest.version}, release.json ${release.version} from ${release.sourceCommit}`);
+          }
           for (const [file, expected] of [
             ['tvissn-extension.zip', latest.sha256],
             ['tvissn-extension-setup.exe', latest.windowsInstaller?.sha256],
           ]) {
             const actual = createHash('sha256').update(readFileSync('dist/extension/' + file)).digest('hex');
-            if (!expected || actual !== expected) throw new Error('Checksum mismatch: ' + file);
+            if (!expected || actual !== expected) throw new Error(`Checksum mismatch: ${file} (expected ${expected}, actual ${actual})`);
           }
           JS
       - name: Publish extension version metadata
