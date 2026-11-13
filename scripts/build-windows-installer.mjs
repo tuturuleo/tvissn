@@ -10,6 +10,44 @@ process.chdir(root);
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
 const readJson = async (file) => JSON.parse(await readFile(file, "utf8"));
 
+// A help invocation need not return zero, so only the file is resolved here;
+// the actual compilation reports launch errors and compiler failures. Every
+// candidate is recorded with its verdict so a CI log shows why none matched.
+async function findCompiler() {
+  const checked = [];
+  const check = async (path, from) => {
+    try {
+      const info = await stat(path);
+      if (info.isFile()) {
+        checked.push({ path, from, verdict: "found" });
+        return true;
+      }
+      checked.push({ path, from, verdict: "rejected: not a regular file" });
+    } catch (error) {
+      checked.push({ path, from, verdict: `rejected: ${error.code ?? error.message}` });
+    }
+    return false;
+  };
+  const explicit = process.env.ISCC_PATH?.trim();
+  if (explicit) {
+    // Quotes copied from a shell/GITHUB_ENV line are not part of a Windows path.
+    const path = explicit.replace(/^"(.*)"$/, "$1");
+    return { compiler: await check(path, "ISCC_PATH") ? path : undefined, source: "ISCC_PATH", checked };
+  }
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    const trimmed = dir.trim().replace(/^"(.*)"$/, "$1");
+    if (!trimmed) continue;
+    const path = resolve(trimmed, "ISCC.exe");
+    if (await check(path, "PATH")) return { compiler: path, source: "PATH", checked };
+  }
+  for (const name of ["ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"]) {
+    if (!process.env[name]) continue;
+    const path = join(process.env[name], "Inno Setup 6", "ISCC.exe");
+    if (await check(path, name)) return { compiler: path, source: name, checked };
+  }
+  return { compiler: undefined, source: undefined, checked };
+}
+
 async function main() {
   const release = await readJson("extension/release.json");
   let manifest;
@@ -55,30 +93,14 @@ async function main() {
     payload.set(name, sha256(data));
   }
 
-  const candidates = process.env.ISCC_PATH ? [process.env.ISCC_PATH] : [
-    "ISCC.exe",
-    ...[process.env["ProgramFiles(x86)"], process.env.ProgramFiles, process.env.LOCALAPPDATA]
-      .filter(Boolean).map((dir) => join(dir, "Inno Setup 6", "ISCC.exe")),
-  ];
-  // A help invocation need not return zero. Resolve the file here and let the
-  // actual compilation report launch errors and compiler failures below.
-  let compiler;
-  for (const candidate of candidates) {
-    const paths = /[/\\]/.test(candidate) ? [candidate] :
-      (process.env.PATH ?? "").split(delimiter).map((dir) => resolve(dir, candidate));
-    for (const path of paths) {
-      try {
-        if ((await stat(path)).isFile()) {
-          compiler = path;
-          break;
-        }
-      } catch (error) {
-        if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
-      }
-    }
-    if (compiler) break;
+  const { compiler, source, checked } = await findCompiler();
+  if (!compiler) {
+    throw new Error("Inno Setup compiler not found. Install Inno Setup 6 locally or set ISCC_PATH to ISCC.exe. No tools are downloaded by this script.\n" +
+      (checked.length ? "Checked candidates:\n" + checked.map(({ path, from, verdict }) => `  - ${path} (${from}): ${verdict}`).join("\n") :
+        "No candidates: ISCC_PATH, PATH, ProgramFiles(x86), ProgramFiles and LOCALAPPDATA are empty."));
   }
-  if (!compiler) throw new Error("Inno Setup compiler not found. Install Inno Setup 6 locally or set ISCC_PATH to ISCC.exe. No tools are downloaded by this script.");
+  for (const { path, from, verdict } of checked) console.log(`Inno Setup candidate (${from}): ${path} -> ${verdict}`);
+  console.log(`Using Inno Setup compiler: ${compiler} (${source})`);
 
   const generated = resolve("dist/installer");
   await mkdir(generated, { recursive: true });
@@ -95,15 +117,33 @@ async function main() {
     "procedure VerifyInstalledFiles;\nbegin\n" + checks.join("\n") + "\nend;\n");
   const output = resolve("dist/extension/tvissn-extension-setup.exe");
   await rm(output, { force: true });
-  const result = spawnSync(compiler, [
+  const outputDir = resolve("dist/extension");
+  const args = [
     `/DAppVersion=${release.version}`,
     `/DExtensionDir=${resolve("extension-dist")}`,
     `/DGeneratedDir=${generated}`,
-    `/DOutputDir=${resolve("dist/extension")}`,
+    `/DOutputDir=${outputDir}`,
     resolve("installer/windows/tvissn.iss"),
-  ], { stdio: "inherit", windowsHide: true });
-  if (result.error || result.status !== 0) throw new Error(`Inno Setup compilation failed: ${result.error?.message ?? result.status}`);
-  await access(output);
+  ];
+  // No shell: each argument reaches ISCC as one argv entry even with spaces.
+  // The quoted form below is only for the log.
+  console.log(`Running: ${[compiler, ...args].map((arg) => /[\s"]/.test(arg) ? `"${arg}"` : arg).join(" ")}`);
+  const result = spawnSync(compiler, args, { stdio: "inherit", windowsHide: true });
+  if (result.error) {
+    throw new Error(`Inno Setup compilation failed: ${result.error.message}` +
+      ` (launch error${result.error.code ? " " + result.error.code : ""}, compiler ${compiler})`);
+  }
+  if (result.status !== 0) {
+    throw new Error(`Inno Setup compilation failed: ${result.signal ? `signal ${result.signal}` : `exit code ${result.status}`}` +
+      ` (compiler ${compiler})`);
+  }
+  console.log("ISCC exit code: 0");
+  try {
+    await access(output);
+  } catch {
+    const present = await readdir(outputDir).catch((error) => [`<unreadable: ${error.code ?? error.message}>`]);
+    throw new Error(`ISCC exited with 0 but did not produce ${output}. ${outputDir} contains: ${present.join(", ") || "<empty>"}`);
+  }
   // Keep all existing ZIP metadata; the Windows job adds only installer metadata.
   metadata.windowsInstaller = {
     fileName: "tvissn-extension-setup.exe",

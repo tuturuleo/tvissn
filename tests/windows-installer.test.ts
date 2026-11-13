@@ -63,7 +63,8 @@ childProcess.spawnSync = (command, args, options) => {
   if (command !== compiler) throw new Error("Unexpected compiler: " + command);
   if (args[0] === "/?") return { status: 1 };
   if (${JSON.stringify(mode)} === "launch-error") return { error: new Error("spawn EACCES"), status: null };
-  if (${JSON.stringify(mode)} === "failure") return { status: 2 };
+  if (${JSON.stringify(mode)} === "failure") return { status: 2, signal: null };
+  if (${JSON.stringify(mode)} === "signal") return { status: null, signal: "SIGTERM" };
   if (${JSON.stringify(mode)} !== "missing-output") {
     const outputDir = args.find((arg) => arg.startsWith("/DOutputDir=")).slice("/DOutputDir=".length);
     writeFileSync(join(outputDir, "tvissn-extension-setup.exe"), "controlled installer bytes");
@@ -85,6 +86,12 @@ test("installer compiles with a compiler whose help returns nonzero and preserve
     await writeFile(latestPath, JSON.stringify(metadata));
     const result = invoke(options);
     assert.equal(result.status, 0, String(result.stderr));
+    const stdout = String(result.stdout);
+    assert.ok(stdout.includes(`Inno Setup candidate (ISCC_PATH): ${options.env!.ISCC_PATH} -> found`), stdout);
+    assert.ok(stdout.includes(`Using Inno Setup compiler: ${options.env!.ISCC_PATH} (ISCC_PATH)`), stdout);
+    // The logged command quotes arguments with spaces exactly like a shell would need.
+    assert.ok(stdout.includes(`Running: "${options.env!.ISCC_PATH}" /DAppVersion=0.2.1.2`), stdout);
+    assert.match(stdout, /ISCC exit code: 0/);
     const calls = JSON.parse(await readFile(join(root, "compiler-calls.json"), "utf8"));
     const compilation = calls.filter((call: { args: string[] }) => call.args[0] !== "/?");
     assert.equal(compilation.length, 1);
@@ -124,6 +131,7 @@ for (const source of ["PATH", "standard directory", "explicit missing path"] as 
       if (source === "explicit missing path") {
         assert.equal(result.status, 1);
         assert.match(String(result.stderr), /Inno Setup compiler not found/);
+        assert.ok(String(result.stderr).includes(`${join(root, "missing-compiler.exe")} (ISCC_PATH): rejected: ENOENT`), String(result.stderr));
         await assert.rejects(readFile(join(root, "compiler-calls.json")), /ENOENT/);
       } else {
         assert.equal(result.status, 0, String(result.stderr));
@@ -134,9 +142,10 @@ for (const source of ["PATH", "standard directory", "explicit missing path"] as 
 }
 
 for (const [mode, error] of [
-  ["failure", /Inno Setup compilation failed: 2/],
-  ["launch-error", /Inno Setup compilation failed: spawn EACCES/],
-  ["missing-output", /ENOENT/],
+  ["failure", /Inno Setup compilation failed: exit code 2 \(compiler .*ISCC\.exe\)/],
+  ["signal", /Inno Setup compilation failed: signal SIGTERM/],
+  ["launch-error", /Inno Setup compilation failed: spawn EACCES \(launch error, compiler .*ISCC\.exe\)/],
+  ["missing-output", /ISCC exited with 0 but did not produce .*tvissn-extension-setup\.exe\. .* contains: latest\.json, tvissn-extension\.zip/],
 ] as const) {
   test(`installer rejects ${mode} without publishing installer metadata`, async () => {
     await fixture(async (root, invoke) => {
@@ -160,6 +169,47 @@ test("installer fails clearly when no local compiler is available", async () => 
     assert.equal(result.status, 1);
     assert.match(String(result.stderr), /Inno Setup compiler not found.*ISCC_PATH.*No tools are downloaded/);
   });
+});
+
+test("installer reports every rejected candidate when discovery fails", async () => {
+  await fixture(async (root, invoke) => {
+    await mkdir(join(root, "Program Files (x86)", "Inno Setup 6", "ISCC.exe"), { recursive: true });
+    const result = invoke({ env: {
+      ISCC_PATH: "", PATH: join(root, "bin"),
+      "ProgramFiles(x86)": join(root, "Program Files (x86)"), ProgramFiles: "", LOCALAPPDATA: "",
+    } });
+    assert.equal(result.status, 1);
+    const stderr = String(result.stderr);
+    assert.match(stderr, /Checked candidates:/);
+    assert.ok(stderr.includes(`${join(root, "bin", "ISCC.exe")} (PATH): rejected: ENOENT`), stderr);
+    assert.ok(stderr.includes(
+      `${join(root, "Program Files (x86)", "Inno Setup 6", "ISCC.exe")} (ProgramFiles(x86)): rejected: not a regular file`), stderr);
+  });
+});
+
+test("installer accepts a quoted ISCC_PATH with surrounding whitespace", async () => {
+  await fixture(async (root, invoke) => {
+    const options = await controlledCompiler(root);
+    const compiler = options.env!.ISCC_PATH!;
+    options.env = { ISCC_PATH: ` "${compiler}"\r` };
+    const result = invoke(options);
+    assert.equal(result.status, 0, String(result.stderr));
+    const calls = JSON.parse(await readFile(join(root, "compiler-calls.json"), "utf8"));
+    assert.equal(calls[0].command, compiler);
+  });
+});
+
+test("Inno Setup script includes generated files through preprocessor expressions", async () => {
+  const script = await readFile("installer/windows/tvissn.iss", "utf8");
+  const directives = script.split(/\r?\n/).filter((line) => line.trimStart().startsWith("#"));
+  // Inline {#...} directives are not expanded inside directive lines.
+  assert.deepEqual(directives.filter((line) => line.includes("{#")), []);
+  assert.deepEqual(directives.filter((line) => line.startsWith("#include")), [
+    '#include GeneratedDir + "\\package-files.iss"',
+    '#include GeneratedDir + "\\verify-files.iss"',
+  ]);
+  assert.match(script, /^OutputBaseFilename=tvissn-extension-setup\r?$/m);
+  assert.match(script, /^OutputDir=\{#OutputDir\}\r?$/m);
 });
 
 test("installer rejects missing payload and stale extension versions before compiling", async () => {
