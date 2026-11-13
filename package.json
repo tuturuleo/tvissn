@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc --noEmit && vite build && node scripts/build-extension.mjs",
     "test": "node --import tsx --test tests/*.test.ts",
+    "build:installer:windows": "node scripts/build-windows-installer.mjs",
     "build:extension": "vite build && node scripts/build-extension.mjs"
   },
   "dependencies": {
